@@ -49,7 +49,7 @@ SUMMARY_MODE_CARD = "渲染卡片"
 
 # region LinkResolver 类
 @register(
-    "astrbot_plugin_vedio_resolver",
+    "astrbot_plugin_video_resolver",
     "imnotbird",
     "解析 & 下载 Bilibili/抖音/小红书/微博/X",
     "1.0.14",

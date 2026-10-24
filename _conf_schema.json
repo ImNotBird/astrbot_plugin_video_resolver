@@ -8,16 +8,14 @@
             "抖音",
             "小红书",
             "微博",
-            "X",
-            "YouTube"
+            "X"
         ],
         "default": [
             "B站",
             "抖音",
             "小红书",
             "微博",
-            "X",
-            "YouTube"
+            "X"
         ]
     },
     "bili_settings": {
@@ -39,10 +37,22 @@
                     "最低"
                 ]
             },
+            "use_bparse": {
+                "description": "启用 bilibili-parse 直链通道",
+                "type": "bool",
+                "hint": "优先使用第三方解析接口(api.injahow.cn/bparse)获取视频直链，可绕过官方API的412风控。关闭后仅走官方 bilibili-api。",
+                "default": true
+            },
+            "bparse_fallback": {
+                "description": "启用 bilibilix 镜像回退",
+                "type": "bool",
+                "hint": "当 bparse 失败时，尝试将 bilibili.com 替换为 bilibilix.com 镜像站获取直链。该通道为第二回退，可用性不稳定。",
+                "default": true
+            },
             "allow_quality_fallback": {
                 "description": "超限时自动降画质",
                 "type": "bool",
-                "hint": "当视频大小超过限制时，自动尝试更低画质下载。",
+                "hint": "当视频大小超过限制时，自动尝试更低画质下载。仅对通道3(官方API)生效。",
                 "default": true
             },
             "merge_send": {
@@ -54,7 +64,7 @@
             "summary_mode": {
                 "description": "B站摘要模式",
                 "type": "string",
-                "hint": "决定合并发送时摘要节点使用纯文字还是渲染卡片。文字摘要只替换卡片节点，不改变媒体发送方式。",
+                "hint": "决定合并发送时摘要节点使用纯文字还是渲染卡片。文字摘要只替换卡片节点，不改变媒体发送方式。元数据获取失败时自动降级为文字摘要。",
                 "default": "文字摘要",
                 "options": [
                     "文字摘要",
@@ -86,7 +96,7 @@
             "cookies": {
                 "description": "B站Cookies",
                 "type": "string",
-                "hint": "粘贴导出的 Cookie 字符串（可选）。填写后可下载更高画质。留空则使用游客模式。",
+                "hint": "粘贴导出的 Cookie 字符串（可选）。填写后可下载更高画质。留空则使用游客模式。注意：bparse/bilibilix 通道不传 Cookie。",
                 "default": ""
             }
         }
@@ -170,69 +180,6 @@
                 "type": "bool",
                 "hint": "仅对单视频推文生效。开启时发送摘要+视频的合并转发；关闭时只发送单独视频。图文、多视频、混合媒体推文始终合并转发。",
                 "default": false
-            }
-        }
-    },
-    "youtube_settings": {
-        "description": "YouTube 设置",
-        "type": "object",
-        "items": {
-            "max_height": {
-                "description": "最高下载分辨率",
-                "type": "string",
-                "hint": "下载高度上限; 优先最高可用画质, 不重新编码.原画不设上限, 仍受大小限制.",
-                "default": "1080P",
-                "options": [
-                    "原画 (最高画质)",
-                    "8K",
-                    "4K",
-                    "1080P",
-                    "720P",
-                    "480P",
-                    "360P",
-                    "240P",
-                    "144P"
-                ]
-            },
-            "max_duration_seconds": {
-                "description": "最大视频时长(秒)",
-                "type": "int",
-                "hint": "超过此时长不下载; 0 为不限.",
-                "default": 300,
-                "min": 0,
-                "max": 86400
-            },
-            "video_codec": {
-                "description": "优先视频编码",
-                "type": "string",
-                "hint": "H.264 兼容性更好; AV1 通常更小.无匹配 MP4 流时自动回退.",
-                "default": "H.264",
-                "options": [
-                    "H.264",
-                    "AV1"
-                ]
-            },
-            "merge_send": {
-                "description": "YouTube 合并发送",
-                "type": "bool",
-                "hint": "合并发送标题、作者和视频; 关闭则只发视频.",
-                "default": false
-            },
-            "cookies": {
-                "description": "YouTube Cookies",
-                "type": "string",
-                "hint": "可选.粘贴完整 Netscape cookies.txt; 不要粘贴 k=v;... 请求头.",
-                "default": ""
-            },
-            "player_client": {
-                "description": "YouTube 请求客户端",
-                "type": "string",
-                "hint": "默认自动选择; 403 时回退 web_embedded(仅限可嵌入视频).",
-                "default": "default",
-                "options": [
-                    "default",
-                    "web_embedded"
-                ]
             }
         }
     },
@@ -355,7 +302,7 @@
             "max_video_size_mb": {
                 "description": "最大视频大小 (MB)",
                 "type": "int",
-                "hint": "超过此大小的视频将不会下载。设置为 0 表示无限制。",
+                "hint": "超过此大小的视频将不会下载。设置为 0 表示无限制。注意：bparse/bilibilix 通道无预估大小，仅在下载后校验。",
                 "default": 200,
                 "min": 0,
                 "max": 1000

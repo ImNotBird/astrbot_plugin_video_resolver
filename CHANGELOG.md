@@ -1,22 +1,17 @@
 # Changelog
 
 ## v1.0.14
+### 修复
+- 修复了Bilibili解析失效的问题
 
 ### 新增
+- Bilibili 视频详细信息获取失败回退
 
-- 支持 YouTube 链接解析与视频下载
-- 支持 YouTube 分辨率、视频编码、时长限制和 Netscape Cookies 配置
-
-### 优化
-
-- 精简 YouTube 配置提示, 补充使用说明与 yt-dlp 致谢
-- 无 FFmpeg 时保留音轨, 403 客户端回退不占用普通重试次数
-- 清理失败和取消下载的临时文件, 要求 yt-dlp >= 2026.8.19
+### 本插件Fork自 vacacia/astrbot_plugin_link_resolver 感谢前人的贡献
 
 ## v1.0.13
 
 ### 修复
-
 - 修复多平台链接识别问题, 补充微博视频链接和 X 长文图片解析.
 
 ## v1.0.12

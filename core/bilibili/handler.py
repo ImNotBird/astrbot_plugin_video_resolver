@@ -97,6 +97,26 @@ CODECS_ALIAS_MAP = {
     "H.265": "HEVC",
     "AV1": "AV1",
 }
+
+# region bparse / bilibilix 解析通道常量
+BPARSE_API = "https://api.injahow.cn/bparse/"
+BILIBILIX_MIRROR = "bilibilix.com"
+
+# 向下取整映射：插件配置 quality_enum_name -> bparse 的 q 参数
+# bparse 支持四档：16(360P流畅) / 32(480P清晰) / 64(720P高清) / 80(1080P超清)
+BPARSE_QUALITY_MAP = {
+    "ORIGINAL": 80,
+    "1080P60": 64,
+    "1080PPLUS": 64,
+    "1080P": 64,
+    "720P60": 32,
+    "720P": 32,
+    "480P": 32,
+    "360P": 16,
+    "240P": 16,
+    "LOWEST": 16,
+}
+# endregion
 # endregion
 
 # region 路径常量（延迟获取）
@@ -351,6 +371,105 @@ class BilibiliMixin:
         for link in links:
             if ref := await self._resolve_video_ref_from_text(link):
                 return ref
+        return None
+
+    # endregion
+
+    # region bparse / bilibilix 解析通道
+    async def _fetch_bparse_url(
+        self,
+        bvid: str | None,
+        avid: int | None,
+        page_index: int = 0,
+    ) -> dict | None:
+        """通道1：调用 bilibili-parse 获取视频直链。
+
+        Returns:
+            成功时返回包含 url / quality / accept_quality 的 dict，失败返回 None。
+        """
+        params: dict = {"otype": "json", "format": "mp4", "p": page_index + 1}
+        if bvid and bvid.startswith("BV"):
+            params["bv"] = bvid
+        elif avid:
+            params["av"] = avid
+        else:
+            return None
+
+        quality_num = BPARSE_QUALITY_MAP.get(self.quality_enum_name, 64)
+        params["q"] = quality_num
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(
+                    BPARSE_API, params=params, headers=_BILI_HEADERS
+                )
+                data = resp.json()
+            if data.get("code") != 0:
+                logger.warning(
+                    "bparse 解析失败: %s",
+                    data.get("message", "unknown"),
+                )
+                return None
+            logger.info(
+                "🔗 bparse 解析成功: bvid=%s, p=%d, 请求画质=%s, 实际画质=%s, 可用画质=%s",
+                bvid,
+                page_index + 1,
+                quality_num,
+                data.get("quality"),
+                data.get("accept_quality"),
+            )
+            return data
+        except Exception as exc:
+            logger.error("bparse 请求异常: %s", str(exc))
+            return None
+
+    async def _fetch_bilibilix_url(
+        self,
+        bvid: str | None,
+        avid: int | None,
+        page_index: int = 0,
+    ) -> str | None:
+        """通道2（回退）：将 bilibili.com 替换为 bilibilix.com，获取视频直链。
+
+        Returns:
+            可直接下载的视频直链，失败返回 None。
+        """
+        if bvid and bvid.startswith("BV"):
+            url = f"https://{BILIBILIX_MIRROR}/video/{bvid}"
+        elif avid:
+            url = f"https://{BILIBILIX_MIRROR}/video/av{avid}"
+        else:
+            return None
+        if page_index > 0:
+            url += f"?p={page_index + 1}"
+
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=False, timeout=15.0, headers=_BILI_HEADERS
+            ) as client:
+                resp = await client.head(url)
+                # 情况A：镜像站返回 3xx 重定向到 CDN 直链
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("Location")
+                    if location:
+                        logger.info(
+                            "🔗 bilibilix 重定向直链: %s -> %s",
+                            url[:80],
+                            location[:80],
+                        )
+                        return location
+                # 情况B：镜像站直接返回视频流
+                content_type = resp.headers.get("Content-Type", "")
+                if "video" in content_type:
+                    logger.info("🔗 bilibilix 直链返回: %s", url[:80])
+                    return url
+                logger.warning(
+                    "bilibilix 返回非视频内容: status=%s, ct=%s",
+                    resp.status_code,
+                    content_type,
+                )
+        except Exception as exc:
+            logger.warning("bilibilix 请求失败: %s", str(exc))
         return None
 
     # endregion
@@ -642,13 +761,82 @@ class BilibiliMixin:
     async def _download_video(
         self,
         video_obj: video.Video,
-        bvid: str,
+        bvid: str | None,
         page_index: int,
         page_count: int,
         cookies: dict[str, str],
         request_id: str,
+        avid: int | None = None,
     ) -> tuple[Path, str]:
-        """下载视频。如果超过大小限制且开启了自动降画质，会尝试更低画质。"""
+        """下载视频。
+
+        下载通道优先级：
+          1. bilibili-parse（第三方直链接口，绕过官方 API 风控）
+          2. bilibilix.com 镜像站（回退）
+          3. bilibili-api-python 官方 API（最终回退，支持大小限制与自动降画质）
+        """
+        # 降级模式下 bvid 可能是 "av<数字>" 占位符，需判断是否为真实 BV 号
+        is_real_bvid = bool(bvid and bvid.startswith("BV"))
+        file_prefix = bvid if bvid else (f"av{avid}" if avid else "video")
+
+        # region 通道1：bilibili-parse
+        if getattr(self, "use_bparse", False):
+            bparse_data = await self._fetch_bparse_url(
+                bvid=bvid if is_real_bvid else None,
+                avid=avid,
+                page_index=page_index,
+            )
+            if bparse_data and bparse_data.get("url"):
+                video_url = bparse_data["url"]
+                quality_num = bparse_data.get("quality", "?")
+                actual_quality_name = f"Q{quality_num}"
+                suffix = f"_p{page_index + 1}" if page_count > 1 else ""
+                output_path = (
+                    get_bilibili_video_path()
+                    / f"{file_prefix}{suffix}_{request_id}.mp4"
+                )
+                logger.info(
+                    "⬇️ 通道1(bparse)开始下载: %s, 画质=%s",
+                    file_prefix,
+                    actual_quality_name,
+                )
+                # Q6-A：跳过大小预检，仅流式监控
+                await self._download_stream(
+                    video_url, output_path, cookies, None, headers=_BILI_HEADERS
+                )
+                return output_path, actual_quality_name
+
+        # endregion
+
+        # region 通道2：bilibilix 镜像
+        if getattr(self, "use_bparse", False) and getattr(
+            self, "bparse_fallback", False
+        ):
+            bilibilix_url = await self._fetch_bilibilix_url(
+                bvid=bvid if is_real_bvid else None,
+                avid=avid,
+                page_index=page_index,
+            )
+            if bilibilix_url:
+                suffix = f"_p{page_index + 1}" if page_count > 1 else ""
+                output_path = (
+                    get_bilibili_video_path()
+                    / f"{file_prefix}{suffix}_{request_id}.mp4"
+                )
+                logger.info(
+                    "⬇️ 通道2(bilibilix)开始下载: %s, url=%s",
+                    file_prefix,
+                    bilibilix_url[:80],
+                )
+                await self._download_stream(
+                    bilibilix_url, output_path, cookies, None, headers=_BILI_HEADERS
+                )
+                return output_path, "Mirror"
+
+        # endregion
+
+        # region 通道3：bilibili-api-python（原有逻辑）
+        logger.info("⬇️ 通道3(bilibili-api)开始下载: %s", file_prefix)
         current_quality = self.video_quality
         max_bytes = (
             self.max_video_size_mb * 1024 * 1024 if self.max_video_size_mb > 0 else None
@@ -693,10 +881,12 @@ class BilibiliMixin:
             break
 
         suffix = f"_p{page_index + 1}" if page_count > 1 else ""
-        output_path = get_bilibili_video_path() / f"{bvid}{suffix}_{request_id}.mp4"
+        output_path = (
+            get_bilibili_video_path() / f"{file_prefix}{suffix}_{request_id}.mp4"
+        )
         logger.debug(
-            "🧩 B站下载路径: bvid=%s, page=%d/%d, request_id=%s, output=%s",
-            bvid,
+            "🧩 B站下载路径: prefix=%s, page=%d/%d, request_id=%s, output=%s",
+            file_prefix,
             page_index + 1,
             page_count,
             request_id,
@@ -718,7 +908,7 @@ class BilibiliMixin:
                 await self._merge_av(temp_video, temp_audio, output_path)
             except asyncio.CancelledError:
                 await self._cleanup_download_artifacts(
-                    bvid,
+                    file_prefix,
                     request_id,
                     [
                         output_path,
@@ -731,7 +921,7 @@ class BilibiliMixin:
                 raise
             except Exception:
                 await self._cleanup_download_artifacts(
-                    bvid,
+                    file_prefix,
                     request_id,
                     [
                         output_path,
@@ -748,6 +938,7 @@ class BilibiliMixin:
             )
 
         return output_path, actual_quality.name
+        # endregion
 
     async def _get_video_info(
         self, video_obj: video.Video, source_tag: str = ""
@@ -1049,43 +1240,59 @@ class BilibiliMixin:
         video_paths: list[Path] = []
         thumbnail_paths: list[Path] = []
         try:
-            # region 解析阶段
+            # region 解析阶段（含元数据降级）
             parse_start = time.perf_counter()
+            info = None
             try:
                 info = await self._get_video_info(video_obj, source_tag)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # 错误日志已在 _get_video_info 中输出
-                return
+                logger.warning(
+                    "⚠️ 元数据获取失败%s，降级为直链模式", source_tag
+                )
             timing["parse"] = time.perf_counter() - parse_start
             # endregion
 
-            stat = info.get("stat", {})
-            bvid = info.get("bvid") or ref.bvid
+            # 确定 bvid：优先真实 BV 号，否则用 av<id> 占位
+            bvid = (info.get("bvid") if info else None) or ref.bvid
+            if not bvid and ref.avid:
+                bvid = f"av{ref.avid}"
             if not bvid:
                 logger.warning("⚠️ 无法获取 bvid%s", source_tag)
                 return
 
-            title = info.get("title", "未知标题")
-            up_name = info.get("owner", {}).get("name", "未知UP主")
-            duration_seconds = info.get("duration", 0)
-            view_count = stat.get("view", 0)
-            likes = stat.get("like", 0)
-            coins = stat.get("coin", 0)
-            shares = stat.get("share", 0)
-            comments = stat.get("reply", 0)
-            cover_url = info.get("pic", "")
+            # 提取元数据（有 info 用真实数据，无 info 走降级）
+            if info:
+                stat = info.get("stat", {})
+                title = info.get("title", "未知标题")
+                up_name = info.get("owner", {}).get("name", "未知UP主")
+                duration_seconds = info.get("duration", 0)
+                view_count = stat.get("view", 0)
+                likes = stat.get("like", 0)
+                coins = stat.get("coin", 0)
+                shares = stat.get("share", 0)
+                comments = stat.get("reply", 0)
+                cover_url = info.get("pic", "")
+                pages = info.get("pages") or []
+            else:
+                # Q1-A：元数据降级
+                title = f"B站视频 {bvid}"
+                up_name = "未知"
+                duration_seconds = 0
+                view_count = likes = coins = shares = comments = 0
+                cover_url = ""
+                pages = []
 
             logger.debug(
-                "✅ B站解析完成%s: bvid=%s, 标题=%s, 解析耗时=%.2fs",
+                "✅ B站解析完成%s: bvid=%s, 标题=%s, 元数据=%s, 解析耗时=%.2fs",
                 source_tag,
                 bvid,
                 title[:30],
+                "正常" if info else "降级",
                 timing["parse"],
             )
 
-            pages = info.get("pages") or []
             page_count = len(pages) if pages else 1
             page_index = min(ref.page_index, max(page_count - 1, 0))
             has_page_param = bool(
@@ -1165,6 +1372,7 @@ class BilibiliMixin:
                             page_count,
                             cookies,
                             request_id,
+                            ref.avid,
                         )
                         size_bytes = self._assert_video_file_ready(
                             video_path, source_tag, request_id
@@ -1263,7 +1471,13 @@ class BilibiliMixin:
             # 单P视频处理
             try:
                 video_path, actual_quality = await self._download_video(
-                    video_obj, bvid, page_index, page_count, cookies, request_id
+                    video_obj,
+                    bvid,
+                    page_index,
+                    page_count,
+                    cookies,
+                    request_id,
+                    ref.avid,
                 )
                 size_bytes = self._assert_video_file_ready(
                     video_path, source_tag, request_id
@@ -1296,7 +1510,8 @@ class BilibiliMixin:
             render_start = time.perf_counter()
             card_path = None
             summary_text = None
-            render_card = getattr(self, "bili_render_card", False)
+            # 元数据降级时禁用卡片渲染（无封面数据）
+            render_card = getattr(self, "bili_render_card", False) and info is not None
             if self.bili_merge_send and render_card:
                 card_path = await self._render_bili_card(
                     title=title,

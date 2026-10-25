@@ -52,7 +52,7 @@ SUMMARY_MODE_CARD = "渲染卡片"
     "astrbot_plugin_video_resolver",
     "imnotbird",
     "解析 & 下载 Bilibili/抖音/小红书/微博/X",
-    "1.0.14",
+    "1.0.15",
 )
 class LinkResolverPlugin(
     BilibiliMixin, DouyinMixin, XiaohongshuMixin, WeiboMixin, TwitterMixin, Star
@@ -61,8 +61,6 @@ class LinkResolverPlugin(
         super().__init__(context)
         self.context = context
         self.config = config or context.get_config()
-        # 注意：必须在 _active_parse_tasks 初始化之前调用；
-        # 该方法通过 asyncio.all_tasks() 扫描清理旧任务，不依赖实例任务池。
         self._cancel_previous_parse_tasks()
         self._active_parse_tasks: set[asyncio.Task] = set()
         self.douyin_extractor = DouyinExtractor()
@@ -80,7 +78,6 @@ class LinkResolverPlugin(
         self._refresh_config()
 
     async def initialize(self) -> None:
-        """在后台线程安装可选字体, 避免阻塞 AstrBot 的事件循环."""
         if not self.font_auto_install_enabled:
             return
 
@@ -134,7 +131,6 @@ class LinkResolverPlugin(
                 self.custom_emoji_font_path,
             )
 
-        # 平台启用列表
         enable_platforms = self._get_config_value(
             "enable_platforms", ["B站", "抖音", "小红书", "微博", "X"]
         )
@@ -160,15 +156,8 @@ class LinkResolverPlugin(
         self.bili_merge_send = bool(
             self._get_config_value("bili_settings.merge_send", False)
         )
-        # bparse / bilibilix 解析通道开关
         self.bili_anonymous_mode = bool(
-    		self._get_config_value("bili_settings.anonymous_mode", False)
-		)
-        self.use_bparse = bool(
-            self._get_config_value("bili_settings.use_bparse", True)
-        )
-        self.bparse_fallback = bool(
-            self._get_config_value("bili_settings.bparse_fallback", True)
+            self._get_config_value("bili_settings.anonymous_mode", False)
         )
         self.bili_summary_mode = self._read_summary_mode("bili_settings.summary_mode")
         self.bili_render_card = self.bili_summary_mode == SUMMARY_MODE_CARD
@@ -184,7 +173,6 @@ class LinkResolverPlugin(
         self.allow_quality_fallback = bool(
             self._get_config_value("bili_settings.allow_quality_fallback", True)
         )
-        # 从配置读取 Cookie 并写入文件
         bili_cookies_str = str(
             self._get_config_value("bili_settings.cookies", "")
         ).strip()
@@ -192,7 +180,6 @@ class LinkResolverPlugin(
             try:
                 cookies_file = get_bili_cookies_file()
                 cookies_file.parent.mkdir(parents=True, exist_ok=True)
-                # 恢复 Netscape 格式的换行符（网页配置粘贴时可能丢失）
                 if "\n" not in bili_cookies_str and ".bilibili.com" in bili_cookies_str:
                     bili_cookies_str = re.sub(
                         r"\s+(\.(?:www\.)?bilibili\.com\s)",
@@ -290,7 +277,7 @@ class LinkResolverPlugin(
         self.reaction_emoji_strategy = (
             _strategy if _strategy in ("随机", "顺序循环") else "随机"
         )
-        self.reaction_emoji_type = "1"  # 固定值，无需配置
+        self.reaction_emoji_type = "1"
         self.max_video_size_mb = int(
             self._get_config_value("general_settings.max_video_size_mb", 200)
         )
@@ -302,7 +289,7 @@ class LinkResolverPlugin(
         ).strip()
         self.error_notify_mode = _mode if _mode in ("静默", "脱敏", "报错") else "静默"
 
-        # 群过滤配置(黑/白名单)
+        # 群过滤配置
         _gf_mode = str(self._get_config_value("group_filter.mode", "黑名单")).strip()
         self.group_filter_mode = (
             _gf_mode if _gf_mode in ("黑名单", "白名单") else "黑名单"
@@ -326,7 +313,6 @@ class LinkResolverPlugin(
             self.codecs_label
         )
 
-        # 构建启用平台列表
         enabled_list = [
             p for p in ["B站", "抖音", "小红书", "微博", "X"] if p in enable_platforms
         ]
@@ -341,14 +327,13 @@ class LinkResolverPlugin(
             else "关闭"
         )
         logger.info(
-            "📹 LinkResolver 配置: 平台=%s, B站(画质=%s,合并=%s,摘要=%s,时长<=%s,bparse=%s,镜像回退=%s), 抖音(合并=%s,摘要=%s), 小红书(原图=%s,摘要=%s,大图转文件=%s), 微博(原图=%s,合并=%s,Cookie=%s), X(合并=%s,最多=%d), 字体(自动安装=%s,主字体=%s,Emoji=%s), 重试=%d",
+            "📹 LinkResolver 配置: 平台=%s, B站(画质=%s,合并=%s,摘要=%s,时长<=%s,匿名=%s), 抖音(合并=%s,摘要=%s), 小红书(原图=%s,摘要=%s,大图转文件=%s), 微博(原图=%s,合并=%s,Cookie=%s), X(合并=%s,最多=%d), 字体(自动安装=%s,主字体=%s,Emoji=%s), 重试=%d",
             "/".join(enabled_list) if enabled_list else "无",
             self.video_quality.name,
             "开" if self.bili_merge_send else "关",
             "卡片" if self.bili_render_card else "文字",
             duration_label,
-            "开" if self.use_bparse else "关",
-            "开" if self.bparse_fallback else "关",
+            "开" if self.bili_anonymous_mode else "关",
             "开" if self.douyin_merge_send else "关",
             "卡片" if self.douyin_render_card else "文字",
             "开" if self.xhs_download_original else "关",
@@ -386,7 +371,6 @@ class LinkResolverPlugin(
     # endregion
 
     def _configure_managed_fonts(self) -> None:
-        """根据配置决定是否启用用户字体和自动安装插件字体。"""
         custom_primary_font = str(
             self._get_config_value("general_settings.custom_font_path", "")
         ).strip()
@@ -424,10 +408,6 @@ class LinkResolverPlugin(
         task.add_done_callback(lambda t: self._active_parse_tasks.discard(t))
 
     def _cancel_previous_parse_tasks(self) -> None:
-        """通过 asyncio.all_tasks() 按任务名/协程名扫描并取消旧解析任务。
-
-        不依赖 self._active_parse_tasks（调用时该属性尚未初始化）。
-        """
         cancelled: list[str] = []
         candidates: set[asyncio.Task] = set()
 
@@ -493,9 +473,7 @@ class LinkResolverPlugin(
             suffix = "..." if len(cancelled) > 5 else ""
             logger.info(
                 "♻️ 插件重载，已中断旧解析任务 %d 个（已进入发送阶段的任务无法终止）: %s%s",
-                len(cancelled),
-                sample,
-                suffix,
+                len(cancelled), sample, suffix,
             )
         else:
             logger.info("♻️ 插件重载，未发现可中断的旧解析任务")
@@ -652,14 +630,6 @@ class LinkResolverPlugin(
             return False
 
     async def _is_bot_muted(self, event: AstrMessageEvent) -> bool:
-        """检测 Bot 是否在群中被禁言。
-
-        通过 OneBot V11 的 get_group_member_info API 获取 Bot 在群中的信息，
-        检查 shut_up_timestamp 字段判断是否被禁言。
-
-        Returns:
-            True 如果 Bot 被禁言，False 如果未被禁言或无法检测。
-        """
         group_id = event.get_group_id()
         if not group_id:
             return False
@@ -689,10 +659,6 @@ class LinkResolverPlugin(
         return False
 
     def _is_group_allowed(self, event: AstrMessageEvent) -> bool:
-        """根据群过滤(黑/白名单)判断当前群是否允许解析。
-
-        私聊不受过滤限制,始终返回 True。
-        """
         group_id = event.get_group_id()
         if not group_id:
             return True
@@ -849,7 +815,6 @@ class LinkResolverPlugin(
                             raise SizeLimitExceeded("超过大小限制")
                         bytes_written = 0
 
-                        # Actually, wrapping each write is fine if chunks are large
                         with open(temp_path, "wb") as file:
                             async for chunk in response.aiter_bytes(1024 * 1024):
                                 if not chunk:
@@ -876,30 +841,98 @@ class LinkResolverPlugin(
                     wait_time = 2**attempt
                     logger.warning(
                         "⚠️ 下载失败, %d秒后重试 (%d/%d): %s",
-                        wait_time,
-                        attempt + 1,
-                        retries,
-                        str(exc),
+                        wait_time, attempt + 1, retries, str(exc),
                     )
                     await asyncio.sleep(wait_time)
         if last_error:
             raise last_error
         raise RuntimeError("下载失败")
 
+    async def _download_with_aria2c(
+        self,
+        url: str,
+        output_path: Path,
+        headers: dict[str, str] | None = None,
+        max_bytes: int | None = None,
+    ) -> int:
+        """用 aria2c 下载文件，返回写入字节数。
+
+        参数精简为与手动成功一致：只用 -U 指定 UA，不传 Referer/Sec-*，
+        避免触发 bilibilix 的指纹一致性校验。
+        """
+        import shutil as _shutil
+
+        aria2c = _shutil.which("aria2c")
+        if not aria2c:
+            raise RuntimeError("aria2c 未安装，无法使用 aria2c 下载后端")
+
+        temp_path = output_path.with_suffix(output_path.suffix + ".part")
+        ua = (headers or {}).get("User-Agent") or (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/146.0.7680.31 Safari/537.36"
+        )
+        cmd = [
+            aria2c,
+            "--console-log-level=warn",
+            "--summary-interval=0",
+            "--max-tries=3",
+            "--retry-wait=2",
+            "--timeout=30",
+            "--connect-timeout=15",
+            "--auto-file-renaming=false",
+            "--allow-overwrite=true",
+            "-U", ua,
+            "-d", str(output_path.parent),
+            "-o", temp_path.name,
+            url,
+        ]
+
+        logger.debug("🚀 aria2c 下载: url=%s, output=%s", url[:120], temp_path.name)
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await process.communicate()
+        except asyncio.CancelledError:
+            try:
+                process.kill()
+            except Exception:
+                pass
+            await asyncio.to_thread(temp_path.unlink, missing_ok=True)
+            raise
+
+        if process.returncode != 0:
+            await asyncio.to_thread(temp_path.unlink, missing_ok=True)
+            out_tail = (stdout.decode(errors="replace") if stdout else "")[-400:]
+            err_tail = (stderr.decode(errors="replace") if stderr else "")[-400:]
+            raise RuntimeError(
+                f"aria2c 退出码 {process.returncode}: "
+                f"stdout={out_tail!r}, stderr={err_tail!r}"
+            )
+
+        if not temp_path.exists() or temp_path.stat().st_size == 0:
+            raise RuntimeError("aria2c 未生成有效文件")
+
+        size = temp_path.stat().st_size
+        if max_bytes and size > max_bytes:
+            await asyncio.to_thread(temp_path.unlink, missing_ok=True)
+            raise SizeLimitExceeded("超过大小限制")
+
+        await asyncio.to_thread(temp_path.replace, output_path)
+        logger.debug("✅ aria2c 下载完成: size=%.2fMB", size / 1024 / 1024)
+        return size
+
     async def _merge_av(self, v_path: Path, a_path: Path, output_path: Path) -> None:
         cmd = [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(v_path),
-            "-i",
-            str(a_path),
-            "-c",
-            "copy",
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
+            "ffmpeg", "-y",
+            "-i", str(v_path),
+            "-i", str(a_path),
+            "-c", "copy",
+            "-map", "0:v:0",
+            "-map", "1:a:0",
             str(output_path),
         ]
         try:
@@ -939,8 +972,6 @@ class LinkResolverPlugin(
     async def cleanup_files(
         self, video_paths: list[Path], thumbnail_paths: list[Path]
     ) -> None:
-        # Direct Send Pattern: 调用此方法时，文件已通过 await event.send() 被读取完毕
-        # 无需延迟，立即清理以避免与后续相同 URL 请求产生竞态条件
         for video_path in video_paths:
             existed = await asyncio.to_thread(video_path.exists)
             await asyncio.to_thread(video_path.unlink, missing_ok=True)
@@ -954,10 +985,6 @@ class LinkResolverPlugin(
 
     # region 合并转发发送人获取
     def _get_merge_sender_uin(self, event: AstrMessageEvent) -> str:
-        """获取合并转发使用的 uin
-
-        根据 merge_send_as_sender 配置决定使用发送者的 uin 还是 Bot 的 uin
-        """
         if self.merge_send_as_sender:
             sender_id = event.get_sender_id()
             if sender_id:
@@ -967,8 +994,6 @@ class LinkResolverPlugin(
     async def _prepare_component_for_merge_send(
         self, component: Comp.BaseMessageComponent
     ) -> Comp.BaseMessageComponent:
-        """规避 AstrBot 合并转发视频节点未走异步 to_dict 的兼容问题。"""
-
         if not isinstance(component, Comp.Video):
             return component
 
@@ -1000,6 +1025,18 @@ class LinkResolverPlugin(
             return
         self._register_parse_task("bili", event)
         await BilibiliMixin.handle_bili_video(self, event)
+
+    @filter.command("bili_debug", alias={"bili调试"})
+    async def handle_bili_debug(self, event: AstrMessageEvent):
+        """B站链路诊断（仅管理员）。"""
+        try:
+            if hasattr(event, "is_admin") and not event.is_admin():
+                yield event.plain_result("⚠️ 该指令仅管理员可用")
+                return
+        except Exception:
+            pass
+        async for result in self.bili_debug(event):
+            yield result
 
     @filter.regex(DOUYIN_MESSAGE_PATTERN, priority=10)
     async def handle_douyin(self, event: AstrMessageEvent):
@@ -1053,9 +1090,7 @@ class LinkResolverPlugin(
                 comp_payload = component
                 if isinstance(component, dict):
                     comp_type = component.get("type")
-                    if (
-                        comp_type == "reply"
-                    ):  # 忽略引用回复组件，防止回复时递归解析原消息
+                    if comp_type == "reply":
                         continue
                     comp_payload = component.get("data") or component
                     is_json_component = (

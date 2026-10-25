@@ -12,7 +12,7 @@
 
 ## ✨ 特性
 
-- 📺 **B站视频解析**：支持多种画质选择，支持多P视频批量下载
+- 📺 **B站视频解析**：支持多种画质选择，支持多P视频批量下载；优先走镜像通道下载，失败时自动回退官方 API
 - 🎵 **抖音解析**：支持视频、图文和动图，无需配置 Cookie，优先下载最高画质并自动尝试备用地址
 - 📕 **小红书原图解析**：支持视频、图文和 Live Photo，可下载原图并自动尝试备用地址
 - 🚦 **群过滤(黑/白名单)**：按群号控制哪些群启用解析，私聊不受影响
@@ -27,47 +27,71 @@
 
 推荐直接从 AstrBot 插件市场安装。插件需要的 Python 包会根据 `requirements.txt` 自动安装。
 
-B站音视频合并依赖系统中的 `ffmpeg`。安装后可在 AstrBot 的运行环境内执行下面的命令确认：
+插件运行依赖系统中的两个命令行工具：
+
+| 依赖 | 用途 | 缺失时的表现 |
+|------|------|-------------|
+| `ffmpeg` | B站音视频合并（官方 API 通道必需） | 带音轨视频无法合并，下载失败 |
+| `aria2c` | B站镜像通道的主力下载器 | 回退到内置 HTTP 下载器，容易被镜像站拒绝 |
+
+安装后可在 AstrBot 的运行环境内执行下面的命令确认：
 
 ```bash
 ffmpeg -version
+aria2c --version
 ```
 
-插件配置和运行数据保存在 AstrBot 的 `data/plugin_data/astrbot_plugin_link_resolver/`，更新插件代码时不会被覆盖。
+常见安装方式：
+
+```bash
+# Debian / Ubuntu
+apt install ffmpeg aria2
+
+# CentOS / RHEL
+yum install ffmpeg aria2
+
+# macOS
+brew install ffmpeg aria2
+
+# Windows
+# ffmpeg: winget install ffmpeg
+# aria2:  从 https://github.com/aria2/aria2/releases 下载 aria2c.exe 放入 PATH
+```
+
+插件配置和运行数据保存在 AstrBot 的 data/plugin_data/astrbot_plugin_link_resolver/，更新插件代码时不会被覆盖。
 
 ---
 
-## ⚙️ 配置项
+⚙️ 配置项
+
 在 AstrBot 管理面板的插件配置中可调整以下选项：
 
 配置面板按平台分组折叠。如果你是从旧版升级，建议重新检查一次配置值。
 
-### 基础设置
+基础设置
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `enable_platforms` | 勾选要启用解析的平台 | B站, 抖音, 小红书, 微博, X |
-| `general_settings.retry_count` | 解析失败重试次数（所有平台共用） | 3 |
-| `general_settings.max_video_size_mb` | 最大视频大小限制 (MB)，超过则跳过下载或自动降画质 | 200 |
-| `general_settings.reaction_emoji_enabled` | 识别链接后是否发表情回应 | ✅ 开启 |
-| `general_settings.reaction_emoji_list` | 回应表情 ID 列表(0~5个), 空=不回应 | `[127827]` |
-| `general_settings.reaction_emoji_strategy` | `随机` 抽1个 / `顺序循环` 全部依次回应(每个 0.5s) | `随机` |
-| `general_settings.auto_install_fonts` | 重载时自动安装字体到插件数据目录 | ❌ 关闭 |
-| `general_settings.custom_font_path` | 自定义主字体文件绝对路径，优先级最高 | 空 |
-| `general_settings.custom_emoji_font_path` | 自定义 Emoji 字体文件绝对路径，优先级最高 | 空 |
-| `general_settings.merge_send_as_sender` | 合并转发显示为原发送者 | ❌ 关闭 |
-| `general_settings.error_notify_mode` | 失败时群内通知模式 | `静默` |
+配置项 说明 默认值
+enable_platforms 勾选要启用解析的平台 B站, 抖音, 小红书, 微博, X
+general_settings.retry_count 解析失败重试次数（所有平台共用） 3
+general_settings.max_video_size_mb 最大视频大小限制 (MB)，超过则跳过下载或自动降画质 200
+general_settings.reaction_emoji_enabled 识别链接后是否发表情回应 ✅ 开启
+general_settings.reaction_emoji_list 回应表情 ID 列表(0~5个), 空=不回应 [127827]
+general_settings.reaction_emoji_strategy 随机 抽1个 / 顺序循环 全部依次回应(每个 0.5s) 随机
+general_settings.auto_install_fonts 重载时自动安装字体到插件数据目录 ❌ 关闭
+general_settings.custom_font_path 自定义主字体文件绝对路径，优先级最高 空
+general_settings.custom_emoji_font_path 自定义 Emoji 字体文件绝对路径，优先级最高 空
+general_settings.merge_send_as_sender 合并转发显示为原发送者 ❌ 关闭
+general_settings.error_notify_mode 失败时群内通知模式 静默
 
-### 群过滤设置
+群过滤设置
 
 按群号限制哪些群启用解析。私聊不受过滤影响，始终放行。
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `group_filter.mode` | 过滤模式：`黑名单`(列表内禁用)/ `白名单`(仅列表内启用) | `黑名单` |
-| `group_filter.group_list` | 群号列表(QQ 群号,纯数字字符串) | `[]` |
+配置项 说明 默认值
+group_filter.mode 过滤模式：黑名单(列表内禁用)/ 白名单(仅列表内启用) 黑名单
+group_filter.group_list 群号列表(QQ 群号,纯数字字符串) []
 
-**示例**：
+示例：
 
 ```jsonc
 "group_filter": {
@@ -83,87 +107,86 @@ ffmpeg -version
 }
 ```
 
-### B站设置
+B站设置
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `bili_settings.video_quality` | 默认下载画质 | `1080P高帧率` |
-| `bili_settings.allow_quality_fallback` | 超限时自动降画质 | ✅ 开启 |
-| `bili_settings.merge_send` | 合并转发发送（不开启则只发视频） | ❌ 关闭 |
-| `bili_settings.summary_mode` | 合并发送时使用 `文字摘要` 或 `渲染卡片` | `文字摘要` |
-| `bili_settings.enable_multi_page` | 启用多P视频下载 | ✅ 开启 |
-| `bili_settings.multi_page_max` | 多P最多下载数量 | 3 |
-| `bili_settings.max_duration_seconds` | 最大视频时长(秒)，超过即忽略 | 300 |
-| `bili_settings.cookies` | B站 Cookies 文本 | 空 |
+配置项 说明 默认值
+bili_settings.video_quality 默认下载画质 1080P高帧率
+bili_settings.anonymous_mode 强制匿名模式，忽略 Cookies 仅用自动获取的指纹 ❌ 关闭
+bili_settings.allow_quality_fallback 超限时自动降画质 ✅ 开启
+bili_settings.merge_send 合并转发发送（不开启则只发视频） ❌ 关闭
+bili_settings.summary_mode 合并发送时使用 文字摘要 或 渲染卡片 文字摘要
+bili_settings.enable_multi_page 启用多P视频下载 ✅ 开启
+bili_settings.multi_page_max 多P最多下载数量 3
+bili_settings.max_duration_seconds 最大视频时长(秒)，超过即忽略 300
+bili_settings.cookies B站 Cookies 文本 空
 
-### 抖音设置
+B站通道策略：插件会优先尝试镜像通道（www.bilibilix.com + aria2c），失败时回退到官方 bilibili-api。未登录时官方通道的画质上限约 720P；需要 1080P+ 请配置 SESSDATA。
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `douyin_settings.max_media` | 图集最多发送媒体数 | 99 |
-| `douyin_settings.merge_send` | 视频使用合并转发 | ❌ 关闭 |
-| `douyin_settings.summary_mode` | 合并发送时使用 `文字摘要` 或 `渲染卡片` | `文字摘要` |
+抖音设置
 
-### 微博设置
+配置项 说明 默认值
+douyin_settings.max_media 图集最多发送媒体数 99
+douyin_settings.merge_send 视频使用合并转发 ❌ 关闭
+douyin_settings.summary_mode 合并发送时使用 文字摘要 或 渲染卡片 文字摘要
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `weibo_settings.max_media` | 图文微博最多发送图片数 | 99 |
-| `weibo_settings.merge_send` | 视频微博使用合并转发 | ❌ 关闭 |
-| `weibo_settings.download_original` | 原图优先下载并自动回退 | ✅ 开启 |
-| `weibo_settings.cookies` | 微博 Cookie 文本 | 空 |
+微博设置
 
-### 小红书设置
+配置项 说明 默认值
+weibo_settings.max_media 图文微博最多发送图片数 99
+weibo_settings.merge_send 视频微博使用合并转发 ❌ 关闭
+weibo_settings.download_original 原图优先下载并自动回退 ✅ 开启
+weibo_settings.cookies 微博 Cookie 文本 空
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `xhs_settings.max_media` | 图集最多发送媒体数 | 99 |
-| `xhs_settings.merge_send` | 视频使用合并转发 | ❌ 关闭 |
-| `xhs_settings.summary_mode` | 合并/逐条发送前使用 `文字摘要` 或 `渲染卡片` | `文字摘要` |
-| `xhs_settings.download_original` | 下载原图（通常为 JPEG） | ✅ 开启 |
-| `xhs_settings.prefer_ci_png` | 优先将图片转码为 PNG | ✅ 开启 |
-| `xhs_settings.concurrent_download` | 并发下载图集图片 | ✅ 开启 |
-| `xhs_settings.auto_unmerge_threshold_mb` | 图片总大小超过此值时停止合并转发 (MB) | 50 |
-| `xhs_settings.qq_image_size_limit_mb` | 单张图片超过此值时转为文件发送 (MB) | 30 |
+小红书设置
 
-### X 设置
+配置项 说明 默认值
+xhs_settings.max_media 图集最多发送媒体数 99
+xhs_settings.merge_send 视频使用合并转发 ❌ 关闭
+xhs_settings.summary_mode 合并/逐条发送前使用 文字摘要 或 渲染卡片 文字摘要
+xhs_settings.download_original 下载原图（通常为 JPEG） ✅ 开启
+xhs_settings.prefer_ci_png 优先将图片转码为 PNG ✅ 开启
+xhs_settings.concurrent_download 并发下载图集图片 ✅ 开启
+xhs_settings.auto_unmerge_threshold_mb 图片总大小超过此值时停止合并转发 (MB) 50
+xhs_settings.qq_image_size_limit_mb 单张图片超过此值时转为文件发送 (MB) 30
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `twitter_settings.max_media` | 单条推文最多发送媒体数 | 99 |
-| `twitter_settings.merge_send` | 单视频推文使用合并转发 | ❌ 关闭 |
+X 设置
 
+配置项 说明 默认值
+twitter_settings.max_media 单条推文最多发送媒体数 99
+twitter_settings.merge_send 单视频推文使用合并转发 ❌ 关闭
 
 ---
 
-## 使用方法
+使用方法
+
 直接发送包含受支持链接的消息即可自动解析，例如：
 
-- `bilibili.com/video/BV...`、`b23.tv/...`、`bili2233.cn/...`
-- `douyin.com/video/...`、`douyin.com/note/...`、`v.douyin.com/...`
-- `xiaohongshu.com/explore/...`、`xiaohongshu.com/discovery/item/...`、`xhslink.com/...`、`xhslink.cn/...`
-- `weibo.com/<uid>/<mblogid>`
-- `m.weibo.cn/detail/<mblogid>`
-- `m.weibo.cn/status/<mblogid>`
-- `weibo.cn/<mblogid>`
-- `twitter.com/<user>/status/<id>`
-- `x.com/<user>/status/<id>`
+· bilibili.com/video/BV...、b23.tv/...、bili2233.cn/...
+· douyin.com/video/...、douyin.com/note/...、v.douyin.com/...
+· xiaohongshu.com/explore/...、xiaohongshu.com/discovery/item/...、xhslink.com/...、xhslink.cn/...
+· weibo.com/<uid>/<mblogid>
+· m.weibo.cn/detail/<mblogid>
+· m.weibo.cn/status/<mblogid>
+· weibo.cn/<mblogid>
+· twitter.com/<user>/status/<id>
+· x.com/<user>/status/<id>
 
 抖音动图和小红书 Live Photo 会同时发送静态图片与对应的动态视频。实际消息形式取决于平台内容和消息适配器支持情况。
 
-### 动图与合并转发
+动图与合并转发
 
 抖音动图和小红书 Live Photo 包含图片与视频。解析和下载完成后，媒体发送仍依赖 AstrBot 使用的消息适配器。若日志显示媒体已经下载完成，但消息长时间没有发出，请继续检查适配器的媒体上传日志。
 
-### X 默认行为
+X 默认行为
 
-- 纯图片推文：始终合并转发，并带文字摘要
-- 单视频推文：按 `twitter_settings.merge_send` 决定是否合并转发
-- 多视频或图文混合推文：始终合并转发，避免非合并模式下丢媒体
-- 当前不提供代理配置
+· 纯图片推文：始终合并转发，并带文字摘要
+· 单视频推文：按 twitter_settings.merge_send 决定是否合并转发
+· 多视频或图文混合推文：始终合并转发，避免非合并模式下丢媒体
+· 当前不提供代理配置
+
 ---
 
-## 📁 目录结构
+📁 目录结构
 
 ```
 astrbot_plugin_link_resolver/
@@ -188,142 +211,164 @@ data/plugin_data/astrbot_plugin_link_resolver/
 
 ---
 
-## 🍪 Cookies 配置（可选）
+🍪 Cookies 配置（可选）
 
-填写 B 站 Cookie 可解锁更高画质（如 1080P60、4K）。
+B站 Cookie
 
-### 方式一：管理面板配置（推荐）
+填写 B 站 Cookie 可解锁更高画质（如 1080P60、4K）。不填也可以正常解析，插件会自动向 B站申请匿名指纹（buvid3 / buvid4）绕过基础风控，但画质上限约 720P。
 
-1. 安装浏览器插件 [Cookies txt](https://microsoftedge.microsoft.com/addons/detail/cookies-txt/dilbcaaegopfblcjdjikanigjbcbngbk?)
-2. 打开 [bilibili.com](https://www.bilibili.com) 并登录
-3. 点击插件的 **Load Cookies**，复制全部内容
-4. 在 AstrBot 管理面板 → 插件配置 → **B站Cookies** 粘贴
+如果明确不希望使用任何 Cookie，可以开启 bili_settings.anonymous_mode，插件将忽略已配置的 Cookies，仅使用匿名指纹。
 
-![获取cookie的插件](docs/images/image.png)
+方式一：管理面板配置（推荐）
 
-![点击 Load Cookies](docs/images/image-1.png)
+1. 安装浏览器插件 Cookies txt
+2. 打开 bilibili.com 并登录
+3. 点击插件的 Load Cookies，复制全部内容
+4. 在 AstrBot 管理面板 → 插件配置 → B站Cookies 粘贴
 
-### 方式二：手动放置文件
+docs/images/image.png
+
+docs/images/image-1.png
+
+方式二：手动放置文件
 
 将 Cookie 内容保存到 AstrBot 数据目录下的
-`data/plugin_data/astrbot_plugin_link_resolver/cookies/bili_cookies.txt`。插件会自动创建目录。
+data/plugin_data/astrbot_plugin_link_resolver/cookies/bili_cookies.txt。插件会自动创建目录。
 
-### 微博 Cookie（可选）
+微博 Cookie（可选）
 
-微博默认会先尝试生成访客 Cookie 解析公开微博；如果遇到受限内容、返回访客校验页面或成功率不稳定，可以在管理面板的 `weibo_settings.cookies` 粘贴浏览器 Cookie 字符串。
+微博默认会先尝试生成访客 Cookie 解析公开微博；如果遇到受限内容、返回访客校验页面或成功率不稳定，可以在管理面板的 weibo_settings.cookies 粘贴浏览器 Cookie 字符串。
 
-建议至少包含 `SUB` 等微博登录态字段，格式示例：
+建议至少包含 SUB 等微博登录态字段，格式示例：
 
 ```text
 SUB=...; SUBP=...; SSOLoginState=...; ALF=...
 ```
-- 微博分享链路风控较重，公开微博也可能出现临时访客校验。
 
-### 插件字体安装（可选）
+微博分享链路风控较重，公开微博也可能出现临时访客校验。
+
+插件字体安装（可选）
 
 卡片渲染现在支持三层优先级：
 
 1. 自定义字体路径
-2. 插件自动安装到插件数据目录 `fonts/` 的字体
+2. 插件自动安装到插件数据目录 fonts/ 的字体
 3. 系统已有字体 / 现有依赖字体
 
 如果你有合适的字体文件，在配置里填写下面两个路径即可，优先级最高：
-- `general_settings.custom_font_path`
-- `general_settings.custom_emoji_font_path`
 
-> 路径需要是 AstrBot 运行环境内可访问的字体文件绝对路径。
+· general_settings.custom_font_path
+· general_settings.custom_emoji_font_path
 
+路径需要是 AstrBot 运行环境内可访问的字体文件绝对路径。
 
-如果不想自己准备字体文件，可以开启 `general_settings.auto_install_fonts`。
+如果不想自己准备字体文件，可以开启 general_settings.auto_install_fonts。
 
-- 插件会在加载重载时自动下载并安装：
-  - 中文主字体：`NotoSansCJKsc-Regular.otf`
-  - Emoji 字体：`OpenMoji-black-glyf.ttf`
-- 安装目录：`data/plugin_data/astrbot_plugin_link_resolver/fonts/`
-  - 优先尝试国内更容易连通的镜像源; 失败后使用 GitHub 原始地址
-  - 如果全部失败，只是回退到系统现有字体
+· 插件会在加载重载时自动下载并安装：
+  · 中文主字体：NotoSansCJKsc-Regular.otf
+  · Emoji 字体：OpenMoji-black-glyf.ttf
+· 安装目录：data/plugin_data/astrbot_plugin_link_resolver/fonts/
+  · 优先尝试国内更容易连通的镜像源; 失败后使用 GitHub 原始地址
+  · 如果全部失败，只是回退到系统现有字体
 
-也可以手动把下面两个文件放进该 `fonts/` 目录：
+也可以手动把下面两个文件放进该 fonts/ 目录：
+
 ```text
 NotoSansCJKsc-Regular.otf
 OpenMoji-black-glyf.ttf
 ```
 
-放置后保持 `general_settings.auto_install_fonts` 开启，并重载插件即可使用这些字体。
-
-
+放置后保持 general_settings.auto_install_fonts 开启，并重载插件即可使用这些字体。
 
 ---
 
+🧩 故障排查
 
-## 📄 许可证
+B站解析失败或报 412
 
-本项目采用 [AGPL-3.0](LICENSE) 许可证。
+先执行管理员指令 /bili_debug，查看输出中的「网络连通性」和「依赖」两节：
+
+· B站nav: 412 → 服务器 IP 被 B站 API 风控，需要配置代理或更换网络
+· bilibilix: 403 → 镜像站拒绝当前客户端，确认 aria2c 是否已安装
+· aria2c: ❌ 未找到 → 安装 aria2（见「安装与依赖」）
+· 未登录且需要 1080P+ → 配置 SESSDATA 或改用 anonymous_mode（画质上限 720P）
+
+视频下载完成但消息未发出
+
+检查 AstrBot 消息适配器的媒体上传日志。插件在 await event.send() 返回后立即清理本地文件，若适配器异步读取文件过慢，可能出现文件已被删除的情况。
+
+合并转发视频节点异常
+
+合并转发包含视频时依赖消息适配器对 Video 组件的支持。若出现「节点内容为空」或「视频无法播放」，尝试关闭 bili_settings.merge_send 或 douyin_settings.merge_send，改为单独发送。
 
 ---
 
-## 🙏 致谢
+📄 许可证
 
-- [astrbot_plugin_parser](https://github.com/Zhalslar/astrbot_plugin_parser)
-- [XHS-Downloader](https://github.com/JoeanAmier/XHS-Downloader) — 小红书图片下载参考实现
-- [Johnserf-Seed/f2](https://github.com/Johnserf-Seed/f2) — 抖音游客请求签名、微博详情接口与访客 Cookie 参考实现
-- [Douyin_TikTok_Download_API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API) - 抖音 WebSign 参考实现
-- [dataabc/weibo-crawler](https://github.com/dataabc/weibo-crawler) — 微博原图/视频字段与公开抓取思路参考
+本项目采用 AGPL-3.0 许可证。
 
 ---
 
-## 📚 常用 emoji_id 速查
+🙏 致谢
 
-`reaction_emoji_list` 字段填入的 ID 取自 QQ 机器人官方文档。完整列表: https://bot.q.qq.com/wiki/develop/api-v2/openapi/emoji/model.html
+· astrbot_plugin_parser
+· XHS-Downloader — 小红书图片下载参考实现
+· Johnserf-Seed/f2 — 抖音游客请求签名、微博详情接口与访客 Cookie 参考实现
+· Douyin_TikTok_Download_API - 抖音 WebSign 参考实现
+· dataabc/weibo-crawler — 微博原图/视频字段与公开抓取思路参考
 
-### 系统表情 (type=1)
+---
 
-| ID  | 含义     | ID   | 含义    | ID  | 含义     |
-| --- | -------- | ---- | ------- | --- | -------- |
-| 4   | 得意     | 96   | 冷汗    | 171 | 茶       |
-| 5   | 流泪     | 97   | 擦汗    | 173 | 泪奔     |
-| 8   | 睡       | 98   | 抠鼻    | 174 | 无奈     |
-| 9   | 大哭     | 99   | 鼓掌    | 175 | 卖萌     |
-| 10  | 尴尬     | 100  | 糗大了  | 176 | 小纠结   |
-| 12  | 调皮     | 101  | 坏笑    | 179 | doge     |
-| 14  | 微笑     | 102  | 左哼哼  | 180 | 惊喜     |
-| 16  | 酷       | 103  | 右哼哼  | 181 | 骚扰     |
-| 21  | 可爱     | 104  | 哈欠    | 182 | 笑哭     |
-| 23  | 傲慢     | 106  | 委屈    | 183 | 我最美   |
-| 24  | 饥饿     | 109  | 左亲亲  | 201 | 点赞     |
-| 25  | 困       | 111  | 可怜    | 214 | 啵啵     |
-| 26  | 惊恐     | 116  | 示爱    | 222 | 抱抱     |
-| 27  | 流汗     | 118  | 抱拳    | 264 | 捂脸     |
-| 28  | 憨笑     | 120  | 拳头    | 271 | 吃瓜     |
-| 29  | 悠闲     | 122  | 爱你    | 272 | 呵呵哒   |
-| 30  | 奋斗     | 123  | NO      | 277 | 汪汪     |
-| 32  | 疑问     | 124  | OK      | 305 | 右亲亲   |
-| 33  | 嘘       | 125  | 转圈    | 314 | 仔细分析 |
-| 34  | 晕       | 129  | 挥手    | 315 | 加油     |
-| 38  | 敲打     | 144  | 喝彩    | 319 | 比心     |
-| 39  | 再见     | 147  | 棒棒糖  | 320 | 庆祝     |
-| 41  | 发抖     | 53   | 蛋糕    | 322 | 拒绝     |
-| 42  | 爱情     | 60   | 咖啡    | 324 | 吃糖     |
-| 43  | 跳跳     | 63   | 玫瑰    | 326 | 生气     |
-| 49  | 拥抱     | 66   | 爱心    | -   | -        |
-| 74  | 太阳     | 75   | 月亮    | -   | -        |
-| 76  | 赞       | 78   | 握手    | -   | -        |
-| 79  | 胜利     | 85   | 飞吻    | -   | -        |
-| 89  | 西瓜     | -    | -       | -   | -        |
+📚 常用 emoji_id 速查
 
-### Emoji 表情 (type=2)
+reaction_emoji_list 字段填入的 ID 取自 QQ 机器人官方文档。完整列表: https://bot.q.qq.com/wiki/develop/api-v2/openapi/emoji/model.html
+
+系统表情 (type=1)
+
+ID 含义 ID 含义 ID 含义
+4 得意 96 冷汗 171 茶
+5 流泪 97 擦汗 173 泪奔
+8 睡 98 抠鼻 174 无奈
+9 大哭 99 鼓掌 175 卖萌
+10 尴尬 100 糗大了 176 小纠结
+12 调皮 101 坏笑 179 doge
+14 微笑 102 左哼哼 180 惊喜
+16 酷 103 右哼哼 181 骚扰
+21 可爱 104 哈欠 182 笑哭
+23 傲慢 106 委屈 183 我最美
+24 饥饿 109 左亲亲 201 点赞
+25 困 111 可怜 214 啵啵
+26 惊恐 116 示爱 222 抱抱
+27 流汗 118 抱拳 264 捂脸
+28 憨笑 120 拳头 271 吃瓜
+29 悠闲 122 爱你 272 呵呵哒
+30 奋斗 123 NO 277 汪汪
+32 疑问 124 OK 305 右亲亲
+33 嘘 125 转圈 314 仔细分析
+34 晕 129 挥手 315 加油
+38 敲打 144 喝彩 319 比心
+39 再见 147 棒棒糖 320 庆祝
+41 发抖 53 蛋糕 322 拒绝
+42 爱情 60 咖啡 324 吃糖
+43 跳跳 63 玫瑰 326 生气
+49 拥抱 66 爱心 - -
+74 太阳 75 月亮 - -
+76 赞 78 握手 - -
+79 胜利 85 飞吻 - -
+89 西瓜 - - - -
+
+Emoji 表情 (type=2)
 
 填写 unicode codepoint 十进制即可 (例如 💩=128169, 👍=128077):
 
-| ID       | 含义   | ID       | 含义   |
-| -------- | ------ | -------- | ------ |
-| 128076   | 👌 好的 | 128170   | 💪 肌肉 |
-| 128077   | 👍 厉害 | 128235   | 📫 邮箱 |
-| 128079   | 👏 鼓掌 | 128293   | 🔥 火   |
-| 128147   | ❤️ 爱心 | 128513   | 😁 呲牙 |
-| 128157   | 💝 礼物 | 128514   | 😂 激动 |
-| 128164   | 💤 睡觉 | 128516   | 😄 高兴 |
-| 128166   | 💦 水   | 128522   | 😊 嘿嘿 |
-| 128168   | 💨 吹气 | 128527   | 😏 哼哼 |
-| 128169   | 💩 粑粑 | 128532   | 😔 失落 |
-| 128538   | 😚 亲亲 | 128557   | 😭 大哭 |
+ID 含义 ID 含义
+128076 👌 好的 128170 💪 肌肉
+128077 👍 厉害 128235 📫 邮箱
+128079 👏 鼓掌 128293 🔥 火
+128147 ❤️ 爱心 128513 😁 呲牙
+128157 💝 礼物 128514 😂 激动
+128164 💤 睡觉 128516 😄 高兴
+128166 💦 水 128522 😊 嘿嘿
+128168 💨 吹气 128527 😏 哼哼
+128169 💩 粑粑 128532 😔 失落
+128538 😚 亲亲 128557 😭 大哭

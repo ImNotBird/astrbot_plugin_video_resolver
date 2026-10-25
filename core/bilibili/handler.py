@@ -47,11 +47,7 @@ _BILI_UA = (
     "Chrome/146.0.7680.31 Safari/537.36"
 )
 _BILI_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/146.0.7680.31 Safari/537.36"
-    ),
+    "User-Agent": _BILI_UA,
     "Referer": "https://www.bilibili.com/",
     "Origin": "https://www.bilibili.com",
     "Accept": "application/json, text/plain, */*",
@@ -63,6 +59,11 @@ _BILI_HEADERS = {
     "Sec-Fetch-Dest": "empty",
     "Sec-Fetch-Site": "same-site",
     "DNT": "1",
+}
+# aria2c 只传最基础的头，避免 Sec-* 触发 CDN 的指纹一致性校验
+_BILI_DOWNLOAD_HEADERS = {
+    "User-Agent": _BILI_UA,
+    "Referer": "https://www.bilibili.com/",
 }
 BILI_VIDEO_URL_PATTERN = (
     r"(https?://)?(?:(?:www|m)\.)?bilibili\.com/video/(BV[0-9A-Za-z]{10}|av\d+)"
@@ -112,21 +113,7 @@ CODECS_ALIAS_MAP = {
     "AV1": "AV1",
 }
 
-BPARSE_API = "https://api.injahow.cn/bparse/"
-BILIBILIX_MIRROR = "bilibilix.com"
-
-BPARSE_QUALITY_MAP = {
-    "ORIGINAL": 80,
-    "1080P60": 64,
-    "1080PPLUS": 64,
-    "1080P": 64,
-    "720P60": 32,
-    "720P": 32,
-    "480P": 32,
-    "360P": 16,
-    "240P": 16,
-    "LOWEST": 16,
-}
+BILIBILIX_MIRROR = "www.bilibilix.com"
 
 _BILI_FINGERPRINT_API = "https://api.bilibili.com/x/frontend/finger/spi"
 _FINGERPRINT_TTL = 6 * 3600  # 6 小时
@@ -367,11 +354,6 @@ class BilibiliMixin:
 
     # region 匿名指纹
     async def _ensure_anonymous_fingerprint(self) -> dict[str, str]:
-        """获取并缓存 B 站匿名指纹（buvid3 / buvid4）。
-
-        B 站对缺少 buvid3/buvid4 的请求会直接返回 412。
-        这里通过官方 SPI 接口获取服务器签发的指纹，作为无需登录的匿名身份。
-        """
         cache = getattr(self, "_buvid_fingerprint_cache", None)
         cache_ts = getattr(self, "_buvid_fingerprint_ts", 0.0)
         if cache and (time.time() - cache_ts) < _FINGERPRINT_TTL:
@@ -402,50 +384,7 @@ class BilibiliMixin:
 
     # endregion
 
-    # region bparse / bilibilix 解析通道
-    async def _fetch_bparse_url(
-        self,
-        bvid: str | None,
-        avid: int | None,
-        page_index: int = 0,
-        cookies: dict[str, str] | None = None,
-    ) -> dict | None:
-        params: dict = {"otype": "json", "format": "mp4", "p": page_index + 1}
-        if bvid and bvid.startswith("BV"):
-            params["bv"] = bvid
-        elif avid:
-            params["av"] = avid
-        else:
-            return None
-
-        quality_num = BPARSE_QUALITY_MAP.get(self.quality_enum_name, 64)
-        params["q"] = quality_num
-
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(
-                    BPARSE_API,
-                    params=params,
-                    headers=_BILI_HEADERS,
-                    cookies=cookies or {},
-                )
-                data = resp.json()
-            if data.get("code") != 0:
-                logger.warning("bparse 解析失败: %s", data.get("message", "unknown"))
-                return None
-            logger.info(
-                "🔗 bparse 解析成功: bvid=%s, p=%d, 请求画质=%s, 实际画质=%s, 可用画质=%s",
-                bvid,
-                page_index + 1,
-                quality_num,
-                data.get("quality"),
-                data.get("accept_quality"),
-            )
-            return data
-        except Exception as exc:
-            logger.error("bparse 请求异常: %s", str(exc))
-            return None
-
+    # region bilibilix 镜像通道
     async def _fetch_bilibilix_url(
         self,
         bvid: str | None,
@@ -453,6 +392,7 @@ class BilibiliMixin:
         page_index: int = 0,
         cookies: dict[str, str] | None = None,
     ) -> str | None:
+        """返回 bilibilix 页面 URL，由下载器跟随重定向获取视频流。"""
         if bvid and bvid.startswith("BV"):
             url = f"https://{BILIBILIX_MIRROR}/video/{bvid}"
         elif avid:
@@ -461,36 +401,7 @@ class BilibiliMixin:
             return None
         if page_index > 0:
             url += f"?p={page_index + 1}"
-
-        try:
-            async with httpx.AsyncClient(
-                follow_redirects=False,
-                timeout=15.0,
-                headers=_BILI_HEADERS,
-                cookies=cookies or {},
-            ) as client:
-                resp = await client.head(url)
-                if resp.status_code in (301, 302, 303, 307, 308):
-                    location = resp.headers.get("Location")
-                    if location:
-                        logger.info(
-                            "🔗 bilibilix 重定向直链: %s -> %s",
-                            url[:80],
-                            location[:80],
-                        )
-                        return location
-                content_type = resp.headers.get("Content-Type", "")
-                if "video" in content_type:
-                    logger.info("🔗 bilibilix 直链返回: %s", url[:80])
-                    return url
-                logger.warning(
-                    "bilibilix 返回非视频内容: status=%s, ct=%s",
-                    resp.status_code,
-                    content_type,
-                )
-        except Exception as exc:
-            logger.warning("bilibilix 请求失败: %s", str(exc))
-        return None
+        return url
 
     # endregion
 
@@ -592,7 +503,6 @@ class BilibiliMixin:
             return {}
 
     def _load_user_cookies(self) -> dict[str, str]:
-        """读取用户配置的 Cookie（文件 / 配置面板），不含匿名指纹。"""
         primary = get_bili_cookies_file()
         plugin_root = Path(__file__).resolve().parents[2]
         candidates = [
@@ -609,12 +519,10 @@ class BilibiliMixin:
         return {}
 
     async def _load_cookies_async(self) -> dict[str, str]:
-        """异步加载 Cookie：用户配置 + 自动匿名指纹。
-
-        - 开启 anonymous_mode 时丢弃用户 Cookie，仅使用匿名指纹。
-        - 用户已配置 buvid3/buvid4 时优先保留用户值。
-        """
-        cookies = {} if getattr(self, "bili_anonymous_mode", False) else self._load_user_cookies()
+        cookies = (
+            {} if getattr(self, "bili_anonymous_mode", False)
+            else self._load_user_cookies()
+        )
         fingerprint = await self._ensure_anonymous_fingerprint()
         for key, value in fingerprint.items():
             cookies.setdefault(key, value)
@@ -778,66 +686,50 @@ class BilibiliMixin:
         is_real_bvid = bool(bvid and bvid.startswith("BV"))
         file_prefix = bvid if bvid else (f"av{avid}" if avid else "video")
 
-        # region 通道1：bilibili-parse
-        if getattr(self, "use_bparse", False):
-            bparse_data = await self._fetch_bparse_url(
-                bvid=bvid if is_real_bvid else None,
-                avid=avid,
-                page_index=page_index,
-                cookies=cookies,
+        # region 通道1：bilibilix 镜像（优先 aria2c）
+        bilibilix_url = await self._fetch_bilibilix_url(
+            bvid=bvid if is_real_bvid else None,
+            avid=avid,
+            page_index=page_index,
+            cookies=cookies,
+        )
+        if bilibilix_url:
+            suffix = f"_p{page_index + 1}" if page_count > 1 else ""
+            output_path = (
+                get_bilibili_video_path()
+                / f"{file_prefix}{suffix}_{request_id}.mp4"
             )
-            if bparse_data and bparse_data.get("url"):
-                video_url = bparse_data["url"]
-                quality_num = bparse_data.get("quality", "?")
-                actual_quality_name = f"Q{quality_num}"
-                suffix = f"_p{page_index + 1}" if page_count > 1 else ""
-                output_path = (
-                    get_bilibili_video_path()
-                    / f"{file_prefix}{suffix}_{request_id}.mp4"
-                )
-                logger.info(
-                    "⬇️ 通道1(bparse)开始下载: %s, 画质=%s",
-                    file_prefix,
-                    actual_quality_name,
-                )
-                await self._download_stream(
-                    video_url, output_path, cookies, None, headers=_BILI_HEADERS
-                )
-                return output_path, actual_quality_name
-
-        # endregion
-
-        # region 通道2：bilibilix 镜像
-        if getattr(self, "use_bparse", False) and getattr(self, "bparse_fallback", False):
-            bilibilix_url = await self._fetch_bilibilix_url(
-                bvid=bvid if is_real_bvid else None,
-                avid=avid,
-                page_index=page_index,
-                cookies=cookies,
+            logger.info(
+                "⬇️ 通道1(bilibilix)开始下载: %s, url=%s",
+                file_prefix, bilibilix_url[:100],
             )
-            if bilibilix_url:
-                suffix = f"_p{page_index + 1}" if page_count > 1 else ""
-                output_path = (
-                    get_bilibili_video_path()
-                    / f"{file_prefix}{suffix}_{request_id}.mp4"
-                )
-                logger.info(
-                    "⬇️ 通道2(bilibilix)开始下载: %s, url=%s",
-                    file_prefix,
-                    bilibilix_url[:80],
-                )
-                await self._download_stream(
-                    bilibilix_url, output_path, cookies, None, headers=_BILI_HEADERS
-                )
+            try:
+                if shutil.which("aria2c"):
+                    await self._download_with_aria2c(
+                        bilibilix_url, output_path,
+                        headers=_BILI_DOWNLOAD_HEADERS,
+                    )
+                else:
+                    logger.warning(
+                        "⚠️ aria2c 未安装，通道1回退到 httpx（可能被 403）"
+                    )
+                    await self._download_stream(
+                        bilibilix_url, output_path, cookies, None,
+                        headers=_BILI_HEADERS,
+                    )
                 return output_path, "Mirror"
-
+            except SizeLimitExceeded:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "⚠️ 通道1(bilibilix+aria2c)失败，回退通道2: %s", str(exc)
+                )
         # endregion
 
-        # region 通道3：bilibili-api-python
-        logger.info("⬇️ 通道3(bilibili-api)开始下载: %s", file_prefix)
+        # region 通道2：bilibili-api-python
+        logger.info("⬇️ 通道2(bilibili-api)开始下载: %s", file_prefix)
         current_quality = self.video_quality
 
-        # 未登录时画质上限降为 720P（B站策略，1080P 需要 SESSDATA）
         if not is_logged_in:
             max_anon_quality = getattr(VideoQuality, "_720P", None)
             if max_anon_quality is not None:
@@ -993,7 +885,6 @@ class BilibiliMixin:
     @staticmethod
     def _is_retryable_error(exc: Exception) -> bool:
         error_str = str(exc).lower()
-        # 412 不重试：重试只会浪费时间，且通常是 IP / 指纹问题
         if "412" in error_str:
             return False
         retryable_patterns = [
@@ -1150,7 +1041,6 @@ class BilibiliMixin:
         credential = self._build_credential(cookies)
         cookie_status = await self._check_cookie_status(cookies)
 
-        # 身份标识日志
         has_sessdata = bool(cookies.get("SESSDATA"))
         has_buvid = bool(cookies.get("buvid3") or cookies.get("buvid4"))
         if cookie_status.is_login:
@@ -1183,7 +1073,6 @@ class BilibiliMixin:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                # 如果是 412，清除指纹缓存，下次强制重新获取
                 if "412" in str(exc).lower():
                     self._invalidate_fingerprint_cache()
                     logger.warning(
@@ -1488,6 +1377,177 @@ class BilibiliMixin:
 
     # endregion
 
+    # region B站链路诊断
+    async def _test_endpoint(
+        self,
+        name: str,
+        url: str,
+        headers: dict | None = None,
+        cookies: dict | None = None,
+        timeout: float = 5.0,
+    ) -> str:
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                headers=headers or {},
+                cookies=cookies or {},
+                follow_redirects=True,
+            ) as client:
+                resp = await client.get(url)
+            code = resp.status_code
+            if code == 200:
+                return f"{name}: ✅ 200 ({len(resp.content)}B)"
+            if code == 412:
+                return f"{name}: ⚠️ 412 风控"
+            if code == 403:
+                return f"{name}: ⚠️ 403 拒绝"
+            return f"{name}: ⚠️ {code}"
+        except asyncio.TimeoutError:
+            return f"{name}: ❌ 超时"
+        except Exception as exc:
+            return f"{name}: ❌ {type(exc).__name__}"
+
+    async def _check_time_drift(self) -> float | None:
+        try:
+            async with httpx.AsyncClient(
+                timeout=5.0, headers=_BILI_HEADERS
+            ) as client:
+                resp = await client.head(
+                    "https://api.bilibili.com/x/web-interface/nav"
+                )
+            date_str = resp.headers.get("Date")
+            if not date_str:
+                return None
+            from email.utils import parsedate_to_datetime
+            server_ts = parsedate_to_datetime(date_str).timestamp()
+            return time.time() - server_ts
+        except Exception:
+            return None
+
+    @staticmethod
+    def _detect_dependencies() -> dict[str, str]:
+        import shutil
+
+        result: dict[str, str] = {}
+        try:
+            import curl_cffi  # noqa: F401
+            result["curl_cffi"] = (
+                f"✅ {getattr(curl_cffi, '__version__', 'installed')}"
+            )
+        except ImportError:
+            result["curl_cffi"] = "❌ 未安装（会回退到 httpx）"
+
+        aria_path = shutil.which("aria2c")
+        result["aria2c"] = f"✅ {aria_path}" if aria_path else "❌ 未找到"
+
+        ff = shutil.which("ffmpeg")
+        result["ffmpeg"] = f"✅ {ff}" if ff else "❌ 未找到（音视频合并会失败）"
+        return result
+
+    async def bili_debug(self, event: AstrMessageEvent):
+        self._refresh_config()
+        lines = ["🔧 B站链路诊断", "━━━━━━━━━━━━━━━━━━━━"]
+
+        lines.append("📋 配置")
+        lines.append(f"  画质: {self.quality_label} ({self.quality_enum_name})")
+        lines.append(f"  编码: {self.codecs_label} ({self.codecs_enum_name})")
+        lines.append(
+            f"  匿名模式: {'开' if getattr(self, 'bili_anonymous_mode', False) else '关'}"
+        )
+        lines.append(f"  下载后端: {getattr(self, 'download_backend', 'auto')}")
+        proxy = getattr(self, "bili_proxy", "") or ""
+        lines.append(f"  代理: {'已配置' if proxy else '未配置'}")
+
+        lines.append("")
+        lines.append("📦 依赖")
+        for name, status in self._detect_dependencies().items():
+            lines.append(f"  {name}: {status}")
+
+        drift = await self._check_time_drift()
+        if drift is None:
+            lines.append("⏰ 系统时间偏差: 无法检测")
+        elif abs(drift) < 60:
+            lines.append(f"⏰ 系统时间偏差: ✅ {drift:+.1f}s")
+        else:
+            lines.append(f"⏰ 系统时间偏差: ⚠️ {drift:+.1f}s（建议校时）")
+
+        lines.append("")
+        lines.append("🍪 凭据")
+        cookies = await self._load_cookies_async()
+        has_sessdata = bool(cookies.get("SESSDATA"))
+        has_buvid3 = bool(cookies.get("buvid3"))
+        has_buvid4 = bool(cookies.get("buvid4"))
+        lines.append(f"  SESSDATA: {'✅' if has_sessdata else '❌'}")
+        lines.append(
+            f"  buvid3/buvid4: {'✅' if has_buvid3 else '❌'}/"
+            f"{'✅' if has_buvid4 else '❌'}"
+        )
+        cache_ts = getattr(self, "_buvid_fingerprint_ts", 0.0)
+        if cache_ts:
+            age_min = (time.time() - cache_ts) / 60
+            lines.append(f"  指纹缓存: {age_min:.1f} 分钟前")
+        else:
+            lines.append("  指纹缓存: 未缓存")
+        status = await self._check_cookie_status(cookies)
+        if status.is_login:
+            vip_tag = "（会员）" if status.is_vip else ""
+            lines.append(f"  登录状态: ✅ 已登录{vip_tag}")
+        else:
+            lines.append(f"  登录状态: ❌ {status.message}")
+
+        lines.append("")
+        lines.append("🌐 网络连通性")
+        results = await asyncio.gather(
+            self._test_endpoint(
+                "指纹API", _BILI_FINGERPRINT_API, headers=_BILI_HEADERS
+            ),
+            self._test_endpoint(
+                "B站nav",
+                "https://api.bilibili.com/x/web-interface/nav",
+                headers=_BILI_HEADERS,
+                cookies=cookies,
+            ),
+            self._test_endpoint(
+                "bilibilix",
+                f"https://{BILIBILIX_MIRROR}/",
+                headers=_BILI_HEADERS,
+            ),
+            return_exceptions=True,
+        )
+        advice: list[str] = []
+        for item in results:
+            if isinstance(item, str):
+                lines.append(f"  {item}")
+                if "bilibilix" in item and (
+                    "403" in item or "412" in item or "❌" in item
+                ):
+                    advice.append(
+                        "bilibilix 异常，建议检查 aria2c 是否安装或配置代理"
+                    )
+                elif ("B站nav" in item or "指纹API" in item) and "412" in item:
+                    advice.append(
+                        "B站 API 返回 412，IP 可能被风控，建议配置代理或更换网络"
+                    )
+            else:
+                lines.append(f"  ❓ 测试异常: {item}")
+
+        if not has_sessdata:
+            advice.append(
+                "未登录，画质上限约 720P；需要 1080P+ 请配置 SESSDATA"
+            )
+        if drift is not None and abs(drift) >= 60:
+            advice.append(
+                "系统时间偏差过大，请执行 timedatectl set-ntp true 校时"
+            )
+        if advice:
+            lines.append("")
+            lines.append("💡 建议")
+            for tip in dict.fromkeys(advice):
+                lines.append(f"  · {tip}")
+
+        yield event.plain_result("\n".join(lines))
+    # endregion
+
     # region 事件处理器
     async def handle_bili_video(self, event: AstrMessageEvent):
         if not self.bili_enabled:
@@ -1505,7 +1565,6 @@ class BilibiliMixin:
         except asyncio.CancelledError:
             logger.info("♻️ B站解析任务已中断")
             return
-
     # endregion
 
 

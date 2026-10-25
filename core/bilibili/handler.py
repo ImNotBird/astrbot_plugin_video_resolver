@@ -47,8 +47,22 @@ _BILI_UA = (
     "Chrome/146.0.7680.31 Safari/537.36"
 )
 _BILI_HEADERS = {
-    "User-Agent": _BILI_UA,
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/146.0.7680.31 Safari/537.36"
+    ),
     "Referer": "https://www.bilibili.com/",
+    "Origin": "https://www.bilibili.com",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Sec-CH-UA": '"Google Chrome";v="146", "Chromium";v="146", "Not)A;Brand";v="24"',
+    "Sec-CH-UA-Mobile": "?0",
+    "Sec-CH-UA-Platform": '"Windows"',
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Site": "same-site",
+    "DNT": "1",
 }
 BILI_VIDEO_URL_PATTERN = (
     r"(https?://)?(?:(?:www|m)\.)?bilibili\.com/video/(BV[0-9A-Za-z]{10}|av\d+)"
@@ -98,12 +112,9 @@ CODECS_ALIAS_MAP = {
     "AV1": "AV1",
 }
 
-# region bparse / bilibilix 解析通道常量
 BPARSE_API = "https://api.injahow.cn/bparse/"
 BILIBILIX_MIRROR = "bilibilix.com"
 
-# 向下取整映射：插件配置 quality_enum_name -> bparse 的 q 参数
-# bparse 支持四档：16(360P流畅) / 32(480P清晰) / 64(720P高清) / 80(1080P超清)
 BPARSE_QUALITY_MAP = {
     "ORIGINAL": 80,
     "1080P60": 64,
@@ -116,13 +127,12 @@ BPARSE_QUALITY_MAP = {
     "240P": 16,
     "LOWEST": 16,
 }
-# endregion
+
+_BILI_FINGERPRINT_API = "https://api.bilibili.com/x/frontend/finger/spi"
+_FINGERPRINT_TTL = 6 * 3600  # 6 小时
 # endregion
 
-# region 路径常量（延迟获取）
-# 注意：这些路径使用函数获取，确保在 StarTools 初始化后调用
-BILI_QQ_THUMB_PATH = ""  # QQ 自定义缩略图路径（空字符串表示禁用）
-# endregion
+BILI_QQ_THUMB_PATH = ""
 
 
 # region 数据类
@@ -150,8 +160,7 @@ class BilibiliMixin:
     # region 画质与编码
     @staticmethod
     def _normalize_quality_alias(label: str) -> str:
-        cleaned = label.strip()
-        cleaned = cleaned.replace(" ", "")
+        cleaned = label.strip().replace(" ", "")
         return QUALITY_ALIAS_MAP.get(cleaned, cleaned.upper())
 
     def _resolve_quality(self, alias: str) -> tuple[str, VideoQuality]:
@@ -172,18 +181,7 @@ class BilibiliMixin:
         return fallback, getattr(VideoQuality, fallback)
 
     def _max_allowed_quality(self) -> tuple[str, VideoQuality]:
-        candidates: list[VideoQuality] = []
-        for quality in VideoQuality:
-            name = quality.name.upper()
-            if not self.allow_hdr and "HDR" in name:
-                continue
-            if not self.allow_dolby and "DOLBY" in name:
-                continue
-            candidates.append(quality)
-        if not candidates:
-            fallback = "_720P"
-            return fallback, getattr(VideoQuality, fallback)
-        candidates = [q for q in candidates if q.value is not None]
+        candidates = self._filtered_qualities()
         if not candidates:
             fallback = "_720P"
             return fallback, getattr(VideoQuality, fallback)
@@ -191,29 +189,14 @@ class BilibiliMixin:
         return best.name, best
 
     def _min_allowed_quality(self) -> tuple[str, VideoQuality]:
-        candidates: list[VideoQuality] = []
-        for quality in VideoQuality:
-            name = quality.name.upper()
-            if not self.allow_hdr and "HDR" in name:
-                continue
-            if not self.allow_dolby and "DOLBY" in name:
-                continue
-            candidates.append(quality)
-        if not candidates:
-            fallback = "_720P"
-            return fallback, getattr(VideoQuality, fallback)
-        candidates = [q for q in candidates if q.value is not None]
+        candidates = self._filtered_qualities()
         if not candidates:
             fallback = "_720P"
             return fallback, getattr(VideoQuality, fallback)
         lowest = min(candidates, key=lambda item: item.value)
         return lowest.name, lowest
 
-    def _get_lower_qualities(self, current_quality: VideoQuality) -> list[VideoQuality]:
-        current_value = getattr(current_quality, "value", None)
-        if current_value is None:
-            return []
-
+    def _filtered_qualities(self) -> list[VideoQuality]:
         candidates: list[VideoQuality] = []
         for quality in VideoQuality:
             name = quality.name.upper()
@@ -221,8 +204,17 @@ class BilibiliMixin:
                 continue
             if not self.allow_dolby and "DOLBY" in name:
                 continue
-            if quality.value is not None and quality.value < current_value:
+            if quality.value is not None:
                 candidates.append(quality)
+        return candidates
+
+    def _get_lower_qualities(self, current_quality: VideoQuality) -> list[VideoQuality]:
+        current_value = getattr(current_quality, "value", None)
+        if current_value is None:
+            return []
+        candidates = [
+            q for q in self._filtered_qualities() if q.value < current_value
+        ]
         return sorted(candidates, key=lambda q: q.value, reverse=True)
 
     @staticmethod
@@ -357,8 +349,6 @@ class BilibiliMixin:
                     ):
                         return ref
                 else:
-                    # 短链接解析失败，但短链接本身可能包含 bvid/avid（虽然 b23.tv 短码不含）
-                    # 尝试从原始 token 解析，以防万一
                     logger.debug("短链接解析失败，尝试从原始链接解析: %s", token[:80])
                     if ref := self._parse_video_ref_from_text(token, source_url=token):
                         return ref
@@ -375,18 +365,51 @@ class BilibiliMixin:
 
     # endregion
 
+    # region 匿名指纹
+    async def _ensure_anonymous_fingerprint(self) -> dict[str, str]:
+        """获取并缓存 B 站匿名指纹（buvid3 / buvid4）。
+
+        B 站对缺少 buvid3/buvid4 的请求会直接返回 412。
+        这里通过官方 SPI 接口获取服务器签发的指纹，作为无需登录的匿名身份。
+        """
+        cache = getattr(self, "_buvid_fingerprint_cache", None)
+        cache_ts = getattr(self, "_buvid_fingerprint_ts", 0.0)
+        if cache and (time.time() - cache_ts) < _FINGERPRINT_TTL:
+            return dict(cache)
+
+        fingerprint: dict[str, str] = {}
+        try:
+            async with httpx.AsyncClient(timeout=10.0, headers=_BILI_HEADERS) as client:
+                resp = await client.get(_BILI_FINGERPRINT_API)
+                data = resp.json()
+            spi_data = data.get("data") or {}
+            if b3 := spi_data.get("b_3"):
+                fingerprint["buvid3"] = str(b3)
+            if b4 := spi_data.get("b_4"):
+                fingerprint["buvid4"] = str(b4)
+        except Exception as exc:
+            logger.warning("⚠️ 获取 B 站匿名指纹失败: %s", str(exc))
+
+        if fingerprint:
+            self._buvid_fingerprint_cache = fingerprint
+            self._buvid_fingerprint_ts = time.time()
+            logger.info("🔑 已获取 B 站匿名指纹: %s", ", ".join(fingerprint.keys()))
+        return fingerprint
+
+    def _invalidate_fingerprint_cache(self) -> None:
+        self._buvid_fingerprint_cache = None
+        self._buvid_fingerprint_ts = 0.0
+
+    # endregion
+
     # region bparse / bilibilix 解析通道
     async def _fetch_bparse_url(
         self,
         bvid: str | None,
         avid: int | None,
         page_index: int = 0,
+        cookies: dict[str, str] | None = None,
     ) -> dict | None:
-        """通道1：调用 bilibili-parse 获取视频直链。
-
-        Returns:
-            成功时返回包含 url / quality / accept_quality 的 dict，失败返回 None。
-        """
         params: dict = {"otype": "json", "format": "mp4", "p": page_index + 1}
         if bvid and bvid.startswith("BV"):
             params["bv"] = bvid
@@ -401,14 +424,14 @@ class BilibiliMixin:
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(
-                    BPARSE_API, params=params, headers=_BILI_HEADERS
+                    BPARSE_API,
+                    params=params,
+                    headers=_BILI_HEADERS,
+                    cookies=cookies or {},
                 )
                 data = resp.json()
             if data.get("code") != 0:
-                logger.warning(
-                    "bparse 解析失败: %s",
-                    data.get("message", "unknown"),
-                )
+                logger.warning("bparse 解析失败: %s", data.get("message", "unknown"))
                 return None
             logger.info(
                 "🔗 bparse 解析成功: bvid=%s, p=%d, 请求画质=%s, 实际画质=%s, 可用画质=%s",
@@ -428,12 +451,8 @@ class BilibiliMixin:
         bvid: str | None,
         avid: int | None,
         page_index: int = 0,
+        cookies: dict[str, str] | None = None,
     ) -> str | None:
-        """通道2（回退）：将 bilibili.com 替换为 bilibilix.com，获取视频直链。
-
-        Returns:
-            可直接下载的视频直链，失败返回 None。
-        """
         if bvid and bvid.startswith("BV"):
             url = f"https://{BILIBILIX_MIRROR}/video/{bvid}"
         elif avid:
@@ -445,10 +464,12 @@ class BilibiliMixin:
 
         try:
             async with httpx.AsyncClient(
-                follow_redirects=False, timeout=15.0, headers=_BILI_HEADERS
+                follow_redirects=False,
+                timeout=15.0,
+                headers=_BILI_HEADERS,
+                cookies=cookies or {},
             ) as client:
                 resp = await client.head(url)
-                # 情况A：镜像站返回 3xx 重定向到 CDN 直链
                 if resp.status_code in (301, 302, 303, 307, 308):
                     location = resp.headers.get("Location")
                     if location:
@@ -458,7 +479,6 @@ class BilibiliMixin:
                             location[:80],
                         )
                         return location
-                # 情况B：镜像站直接返回视频流
                 content_type = resp.headers.get("Content-Type", "")
                 if "video" in content_type:
                     logger.info("🔗 bilibilix 直链返回: %s", url[:80])
@@ -514,7 +534,6 @@ class BilibiliMixin:
                             links.extend(
                                 self.extract_links_from_text(value, include_ids=False)
                             )
-
             logger.debug("从 JSON 组件中提取到链接: %s", links)
         except Exception as exc:
             logger.warning("⚠️ 解析 JSON 消息组件失败: %s", str(exc))
@@ -528,13 +547,8 @@ class BilibiliMixin:
         if not raw:
             return {}
         ignore_attrs = {
-            "path",
-            "domain",
-            "expires",
-            "max-age",
-            "secure",
-            "httponly",
-            "samesite",
+            "path", "domain", "expires", "max-age",
+            "secure", "httponly", "samesite",
         }
         cookies: dict[str, str] = {}
         for part in raw.split(";"):
@@ -577,7 +591,8 @@ class BilibiliMixin:
             logger.warning("⚠️ 读取 cookies 失败: %s", str(exc))
             return {}
 
-    def _load_cookies(self) -> dict[str, str]:
+    def _load_user_cookies(self) -> dict[str, str]:
+        """读取用户配置的 Cookie（文件 / 配置面板），不含匿名指纹。"""
         primary = get_bili_cookies_file()
         plugin_root = Path(__file__).resolve().parents[2]
         candidates = [
@@ -593,6 +608,18 @@ class BilibiliMixin:
                 return cookies
         return {}
 
+    async def _load_cookies_async(self) -> dict[str, str]:
+        """异步加载 Cookie：用户配置 + 自动匿名指纹。
+
+        - 开启 anonymous_mode 时丢弃用户 Cookie，仅使用匿名指纹。
+        - 用户已配置 buvid3/buvid4 时优先保留用户值。
+        """
+        cookies = {} if getattr(self, "bili_anonymous_mode", False) else self._load_user_cookies()
+        fingerprint = await self._ensure_anonymous_fingerprint()
+        for key, value in fingerprint.items():
+            cookies.setdefault(key, value)
+        return cookies
+
     def _build_credential(self, cookies: dict[str, str]) -> Credential:
         if not cookies:
             return Credential(sessdata=None)
@@ -600,7 +627,11 @@ class BilibiliMixin:
             return Credential.from_cookies(cookies)
         except Exception as exc:
             logger.warning("⚠️ 读取 cookies 失败，使用简化凭证: %s", str(exc))
-            return Credential(sessdata=cookies.get("SESSDATA"))
+            return Credential(
+                sessdata=cookies.get("SESSDATA"),
+                buvid3=cookies.get("buvid3"),
+                buvid4=cookies.get("buvid4"),
+            )
 
     async def _check_cookie_status(self, cookies: dict[str, str]) -> CookieStatus:
         if not cookies:
@@ -638,14 +669,12 @@ class BilibiliMixin:
     # region B站视频处理
     @staticmethod
     def _normalize_bili_codecs_for_detector(download_url_data: dict) -> None:
-        """兼容 bilibili-api-python 17.4.1 无法识别 hvc1/hev1 的情况."""
         try:
             data = download_url_data.get("video_info") or download_url_data
             dash = data.get("dash") if isinstance(data, dict) else None
             videos = dash.get("video") if isinstance(dash, dict) else None
             if not isinstance(videos, list):
                 return
-
             fixed = 0
             for item in videos:
                 if not isinstance(item, dict):
@@ -657,7 +686,6 @@ class BilibiliMixin:
                 if normalized.startswith(("hvc1", "hev1")):
                     item["codecs"] = f"hev {codecs}"
                     fixed += 1
-
             if fixed:
                 logger.debug("🩹 已兼容 B站 HEVC 编码标签: fixed=%d", fixed)
         except Exception as exc:
@@ -669,12 +697,6 @@ class BilibiliMixin:
         page_index: int,
         video_quality: VideoQuality | None = None,
     ) -> tuple:
-        """选择视频流和音频流。可指定画质，否则使用配置的默认画质。
-
-        Returns:
-            tuple: (video_stream, audio_stream, estimated_size_mb)
-                - estimated_size_mb: 从 API 的 bandwidth 和 timelength 计算的预估大小 (MB)，如果无法计算则为 None
-        """
         target_quality = video_quality or self.video_quality
         download_url_data = await video_obj.get_download_url(page_index=page_index)
         self._normalize_bili_codecs_for_detector(download_url_data)
@@ -695,11 +717,9 @@ class BilibiliMixin:
         if len(streams) > 1 and isinstance(streams[1], AudioStreamDownloadURL):
             audio_stream = streams[1]
 
-        # 从原始 API 数据计算预估文件大小
         estimated_size_mb = self._estimate_size_from_api_data(
             download_url_data, video_stream, audio_stream
         )
-
         logger.debug(
             "🎞️ 实际选用画质: %s, 编码: %s, 预估大小: %s MB",
             video_stream.video_quality.name,
@@ -714,31 +734,21 @@ class BilibiliMixin:
         video_stream: VideoStreamDownloadURL,
         audio_stream: AudioStreamDownloadURL | None,
     ) -> float | None:
-        """从 API 返回的 bandwidth 和 timelength 字段计算预估文件大小。
-
-        公式: size_bytes = bandwidth * (timelength / 1000) / 8
-        """
         try:
             dash = download_url_data.get("dash")
             if not dash:
                 return None
-
-            timelength_ms = download_url_data.get("timelength")  # 毫秒
+            timelength_ms = download_url_data.get("timelength")
             if not timelength_ms:
                 return None
             timelength_sec = timelength_ms / 1000
-
             total_bandwidth = 0
-
-            # 查找匹配的视频流 bandwidth
             video_url = video_stream.url
             for v in dash.get("video", []):
                 v_url = v.get("baseUrl") or v.get("base_url", "")
                 if v_url == video_url:
                     total_bandwidth += v.get("bandwidth", 0)
                     break
-
-            # 查找匹配的音频流 bandwidth
             if audio_stream:
                 audio_url = audio_stream.url
                 for a in dash.get("audio", []):
@@ -746,14 +756,10 @@ class BilibiliMixin:
                     if a_url == audio_url:
                         total_bandwidth += a.get("bandwidth", 0)
                         break
-
             if total_bandwidth == 0:
                 return None
-
-            # bandwidth 单位是 bps (bits per second)
             size_bytes = total_bandwidth * timelength_sec / 8
-            size_mb = size_bytes / 1024 / 1024
-            return size_mb
+            return size_bytes / 1024 / 1024
         except Exception as exc:
             logger.debug("从 API 数据计算文件大小失败: %s", str(exc))
             return None
@@ -767,15 +773,8 @@ class BilibiliMixin:
         cookies: dict[str, str],
         request_id: str,
         avid: int | None = None,
+        is_logged_in: bool = False,
     ) -> tuple[Path, str]:
-        """下载视频。
-
-        下载通道优先级：
-          1. bilibili-parse（第三方直链接口，绕过官方 API 风控）
-          2. bilibilix.com 镜像站（回退）
-          3. bilibili-api-python 官方 API（最终回退，支持大小限制与自动降画质）
-        """
-        # 降级模式下 bvid 可能是 "av<数字>" 占位符，需判断是否为真实 BV 号
         is_real_bvid = bool(bvid and bvid.startswith("BV"))
         file_prefix = bvid if bvid else (f"av{avid}" if avid else "video")
 
@@ -785,6 +784,7 @@ class BilibiliMixin:
                 bvid=bvid if is_real_bvid else None,
                 avid=avid,
                 page_index=page_index,
+                cookies=cookies,
             )
             if bparse_data and bparse_data.get("url"):
                 video_url = bparse_data["url"]
@@ -800,7 +800,6 @@ class BilibiliMixin:
                     file_prefix,
                     actual_quality_name,
                 )
-                # Q6-A：跳过大小预检，仅流式监控
                 await self._download_stream(
                     video_url, output_path, cookies, None, headers=_BILI_HEADERS
                 )
@@ -809,13 +808,12 @@ class BilibiliMixin:
         # endregion
 
         # region 通道2：bilibilix 镜像
-        if getattr(self, "use_bparse", False) and getattr(
-            self, "bparse_fallback", False
-        ):
+        if getattr(self, "use_bparse", False) and getattr(self, "bparse_fallback", False):
             bilibilix_url = await self._fetch_bilibilix_url(
                 bvid=bvid if is_real_bvid else None,
                 avid=avid,
                 page_index=page_index,
+                cookies=cookies,
             )
             if bilibilix_url:
                 suffix = f"_p{page_index + 1}" if page_count > 1 else ""
@@ -835,9 +833,23 @@ class BilibiliMixin:
 
         # endregion
 
-        # region 通道3：bilibili-api-python（原有逻辑）
+        # region 通道3：bilibili-api-python
         logger.info("⬇️ 通道3(bilibili-api)开始下载: %s", file_prefix)
         current_quality = self.video_quality
+
+        # 未登录时画质上限降为 720P（B站策略，1080P 需要 SESSDATA）
+        if not is_logged_in:
+            max_anon_quality = getattr(VideoQuality, "_720P", None)
+            if max_anon_quality is not None:
+                current_val = getattr(current_quality, "value", None)
+                anon_val = getattr(max_anon_quality, "value", None)
+                if current_val is not None and anon_val is not None and current_val > anon_val:
+                    logger.info(
+                        "👤 未登录，画质从 %s 自动降为 _720P",
+                        current_quality.name,
+                    )
+                    current_quality = max_anon_quality
+
         max_bytes = (
             self.max_video_size_mb * 1024 * 1024 if self.max_video_size_mb > 0 else None
         )
@@ -850,7 +862,6 @@ class BilibiliMixin:
             audio_url = audio_stream.url if audio_stream else None
             actual_quality = video_stream.video_quality
 
-            # size_mb 现在从 API 的 bandwidth 和 timelength 计算，比 HTTP HEAD 更可靠
             if size_mb is None and max_bytes is not None:
                 logger.warning("⚠️ 无法从 API 获取视频大小估算，降画质功能可能不生效")
 
@@ -874,10 +885,7 @@ class BilibiliMixin:
                         )
                         current_quality = next_quality
                         continue
-                # 无法降级或禁用降级
                 raise SizeLimitExceeded("超过大小限制")
-
-            # 大小合适，开始下载
             break
 
         suffix = f"_p{page_index + 1}" if page_count > 1 else ""
@@ -910,26 +918,14 @@ class BilibiliMixin:
                 await self._cleanup_download_artifacts(
                     file_prefix,
                     request_id,
-                    [
-                        output_path,
-                        temp_video,
-                        temp_audio,
-                        temp_video_part,
-                        temp_audio_part,
-                    ],
+                    [output_path, temp_video, temp_audio, temp_video_part, temp_audio_part],
                 )
                 raise
             except Exception:
                 await self._cleanup_download_artifacts(
                     file_prefix,
                     request_id,
-                    [
-                        output_path,
-                        temp_video,
-                        temp_audio,
-                        temp_video_part,
-                        temp_audio_part,
-                    ],
+                    [output_path, temp_video, temp_audio, temp_video_part, temp_audio_part],
                 )
                 raise
         else:
@@ -943,7 +939,6 @@ class BilibiliMixin:
     async def _get_video_info(
         self, video_obj: video.Video, source_tag: str = ""
     ) -> dict:
-        """获取视频信息，带重试机制"""
         retry_count = getattr(self, "retry_count", 3)
         last_error: Exception | None = None
 
@@ -955,13 +950,10 @@ class BilibiliMixin:
             except asyncio.TimeoutError as exc:
                 last_error = exc
                 if attempt < retry_count:
-                    wait_time = 2**attempt  # 指数退避: 1s, 2s, 4s...
+                    wait_time = 2**attempt
                     logger.warning(
                         "⚠️ B站视频信息获取超时%s, %d秒后重试 (%d/%d)",
-                        source_tag,
-                        wait_time,
-                        attempt + 1,
-                        retry_count,
+                        source_tag, wait_time, attempt + 1, retry_count,
                     )
                     await asyncio.sleep(wait_time)
                 else:
@@ -970,7 +962,6 @@ class BilibiliMixin:
                     )
             except Exception as exc:
                 last_error = exc
-                # 检查是否为 curl 超时错误
                 error_str = str(exc).lower()
                 is_timeout = "timeout" in error_str or "curl: (28)" in error_str
 
@@ -978,30 +969,20 @@ class BilibiliMixin:
                     wait_time = 2**attempt
                     logger.warning(
                         "⚠️ B站视频信息获取失败%s: %s, %d秒后重试 (%d/%d)",
-                        source_tag,
-                        str(exc),
-                        wait_time,
-                        attempt + 1,
-                        retry_count,
+                        source_tag, str(exc), wait_time, attempt + 1, retry_count,
                     )
                     await asyncio.sleep(wait_time)
                 elif attempt < retry_count and self._is_retryable_error(exc):
                     wait_time = 2**attempt
                     logger.warning(
                         "⚠️ B站视频信息获取失败%s: %s, %d秒后重试 (%d/%d)",
-                        source_tag,
-                        str(exc),
-                        wait_time,
-                        attempt + 1,
-                        retry_count,
+                        source_tag, str(exc), wait_time, attempt + 1, retry_count,
                     )
                     await asyncio.sleep(wait_time)
                 else:
                     logger.error(
                         "❌ B站视频信息获取失败%s: %s (已重试%d次)",
-                        source_tag,
-                        str(exc),
-                        retry_count,
+                        source_tag, str(exc), retry_count,
                     )
                     break
 
@@ -1011,28 +992,20 @@ class BilibiliMixin:
 
     @staticmethod
     def _is_retryable_error(exc: Exception) -> bool:
-        """判断是否为可重试的网络错误"""
         error_str = str(exc).lower()
+        # 412 不重试：重试只会浪费时间，且通常是 IP / 指纹问题
+        if "412" in error_str:
+            return False
         retryable_patterns = [
-            "timeout",
-            "timed out",
-            "connection",
-            "reset",
-            "refused",
-            "curl:",
-            "network",
-            "temporary",
-            "unavailable",
-            "503",
-            "502",
+            "timeout", "timed out", "connection", "reset",
+            "refused", "curl:", "network", "temporary",
+            "unavailable", "503", "502",
         ]
         return any(pattern in error_str for pattern in retryable_patterns)
 
     @staticmethod
     def _assert_video_file_ready(
-        video_path: Path,
-        source_tag: str,
-        request_id: str,
+        video_path: Path, source_tag: str, request_id: str
     ) -> int:
         if not video_path.exists():
             raise FileNotFoundError(f"视频文件不存在: {video_path}")
@@ -1043,18 +1016,12 @@ class BilibiliMixin:
             raise RuntimeError(f"视频文件大小为0: {video_path}")
         logger.debug(
             "📦 视频文件校验通过%s: request_id=%s, path=%s, size=%.2fMB",
-            source_tag,
-            request_id,
-            video_path,
-            size_bytes / 1024 / 1024,
+            source_tag, request_id, video_path, size_bytes / 1024 / 1024,
         )
         return size_bytes
 
     async def _cleanup_download_artifacts(
-        self,
-        bvid: str,
-        request_id: str,
-        paths: list[Path],
+        self, bvid: str, request_id: str, paths: list[Path]
     ) -> None:
         for path in paths:
             try:
@@ -1063,32 +1030,23 @@ class BilibiliMixin:
                 if existed:
                     logger.debug(
                         "🧹 清理B站下载临时文件: bvid=%s, request_id=%s, path=%s",
-                        bvid,
-                        request_id,
-                        path,
+                        bvid, request_id, path,
                     )
             except Exception as exc:
                 logger.warning(
                     "⚠️ 清理B站下载临时文件失败: bvid=%s, request_id=%s, path=%s, err=%s",
-                    bvid,
-                    request_id,
-                    path,
-                    str(exc),
+                    bvid, request_id, path, str(exc),
                 )
 
     async def _download_bili_cover(
         self, cover_url: str, bvid: str, request_id: str
     ) -> Path | None:
-        """下载封面图到缓存目录"""
         if not cover_url:
             return None
         try:
             cover_path = get_bilibili_card_path() / f"{bvid}_{request_id}_cover.jpg"
             await self._download_stream(
-                cover_url,
-                cover_path,
-                cookies=None,
-                max_bytes=None,
+                cover_url, cover_path, cookies=None, max_bytes=None,
                 headers=_BILI_HEADERS,
             )
             return cover_path
@@ -1097,7 +1055,6 @@ class BilibiliMixin:
             return None
 
     def _format_count(self, count: int) -> str:
-        """格式化数字为易读形式"""
         if count >= 100000000:
             return f"{count / 100000000:.1f}亿"
         if count >= 10000:
@@ -1116,18 +1073,9 @@ class BilibiliMixin:
         return f"{minutes}:{secs:02d}"
 
     def _build_bili_summary(
-        self,
-        *,
-        title: str,
-        up_name: str,
-        view_count: int,
-        likes: int,
-        coins: int,
-        shares: int,
-        comments: int,
-        duration_seconds: int,
-        quality: str,
-        source_url: str | None,
+        self, *, title: str, up_name: str, view_count: int, likes: int,
+        coins: int, shares: int, comments: int, duration_seconds: int,
+        quality: str, source_url: str | None,
     ) -> str:
         lines = [
             "🎬 B站",
@@ -1148,44 +1096,26 @@ class BilibiliMixin:
         return "\n".join(lines)
 
     async def _render_bili_card(
-        self,
-        *,
-        title: str,
-        author: str,
-        cover_url: str,
-        bvid: str,
-        views: int,
-        likes: int,
-        coins: int,
-        request_id: str,
+        self, *, title: str, author: str, cover_url: str, bvid: str,
+        views: int, likes: int, coins: int, request_id: str,
     ) -> Path | None:
-        """渲染B站视频卡片"""
         cover_path: Path | None = None
         try:
             cover_path = await self._download_bili_cover(cover_url, bvid, request_id)
-
             theme = get_theme_for_platform("bilibili")
             renderer = UniversalCardRenderer(theme)
-
             data = CardData(
-                title=title,
-                author=author,
-                text=None,
-                image_paths=[],
-                cover_path=cover_path,
-                is_video=True,
+                title=title, author=author, text=None, image_paths=[],
+                cover_path=cover_path, is_video=True,
                 stats={
                     "播放": self._format_count(views),
                     "点赞": self._format_count(likes),
                     "投币": self._format_count(coins),
                 },
             )
-
-            # 使用 asyncio.to_thread 避免阻塞事件循环
             card_img = await asyncio.to_thread(renderer.render, data)
             card_path = get_bilibili_card_path() / f"{bvid}_{request_id}_card.png"
             await save_image_file(card_img, card_path)
-
             logger.debug("✅ B站卡片渲染成功: %s", card_path)
             return card_path
         except Exception as exc:
@@ -1202,7 +1132,7 @@ class BilibiliMixin:
         self, event: AstrMessageEvent, ref: VideoRef, is_from_card: bool = False
     ):
         process_start = time.perf_counter()
-        timing = {}  # 记录各步骤耗时
+        timing = {}
 
         self._refresh_config()
         if not self.bili_enabled:
@@ -1212,22 +1142,27 @@ class BilibiliMixin:
         request_id = uuid.uuid4().hex[:8]
         logger.debug(
             "🧩 B站处理任务%s: request_id=%s, source=%s",
-            source_tag,
-            request_id,
-            ref.source_url or ref.bvid or ref.avid,
+            source_tag, request_id, ref.source_url or ref.bvid or ref.avid,
         )
         await self._send_reaction_emoji(event, source_tag)
 
-        cookies = self._load_cookies()
+        cookies = await self._load_cookies_async()
         credential = self._build_credential(cookies)
         cookie_status = await self._check_cookie_status(cookies)
+
+        # 身份标识日志
+        has_sessdata = bool(cookies.get("SESSDATA"))
+        has_buvid = bool(cookies.get("buvid3") or cookies.get("buvid4"))
+        if cookie_status.is_login:
+            identity_tag = "登录"
+        elif has_buvid:
+            identity_tag = "游客+匿名指纹"
+        else:
+            identity_tag = "纯游客"
         logger.debug(
-            "🍪 Cookie检测%s: 登录=%s, 会员=%s, vipType=%s, 状态=%s",
-            source_tag,
-            cookie_status.is_login,
-            cookie_status.is_vip,
-            cookie_status.vip_type,
-            cookie_status.message,
+            "🍪 Cookie检测%s: 身份=%s, 登录=%s, 会员=%s, vipType=%s, 状态=%s",
+            source_tag, identity_tag, cookie_status.is_login,
+            cookie_status.is_vip, cookie_status.vip_type, cookie_status.message,
         )
 
         if ref.bvid:
@@ -1247,14 +1182,23 @@ class BilibiliMixin:
                 info = await self._get_video_info(video_obj, source_tag)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.warning(
-                    "⚠️ 元数据获取失败%s，降级为直链模式", source_tag
-                )
+            except Exception as exc:
+                # 如果是 412，清除指纹缓存，下次强制重新获取
+                if "412" in str(exc).lower():
+                    self._invalidate_fingerprint_cache()
+                    logger.warning(
+                        "⚠️ 元数据获取触发 412%s，已清空匿名指纹缓存；"
+                        "若持续出现，服务器 IP 可能已被 B站风控",
+                        source_tag,
+                    )
+                else:
+                    logger.warning(
+                        "⚠️ 元数据获取失败%s，降级为直链模式: %s",
+                        source_tag, str(exc),
+                    )
             timing["parse"] = time.perf_counter() - parse_start
             # endregion
 
-            # 确定 bvid：优先真实 BV 号，否则用 av<id> 占位
             bvid = (info.get("bvid") if info else None) or ref.bvid
             if not bvid and ref.avid:
                 bvid = f"av{ref.avid}"
@@ -1262,7 +1206,6 @@ class BilibiliMixin:
                 logger.warning("⚠️ 无法获取 bvid%s", source_tag)
                 return
 
-            # 提取元数据（有 info 用真实数据，无 info 走降级）
             if info:
                 stat = info.get("stat", {})
                 title = info.get("title", "未知标题")
@@ -1276,7 +1219,6 @@ class BilibiliMixin:
                 cover_url = info.get("pic", "")
                 pages = info.get("pages") or []
             else:
-                # Q1-A：元数据降级
                 title = f"B站视频 {bvid}"
                 up_name = "未知"
                 duration_seconds = 0
@@ -1286,11 +1228,8 @@ class BilibiliMixin:
 
             logger.debug(
                 "✅ B站解析完成%s: bvid=%s, 标题=%s, 元数据=%s, 解析耗时=%.2fs",
-                source_tag,
-                bvid,
-                title[:30],
-                "正常" if info else "降级",
-                timing["parse"],
+                source_tag, bvid, title[:30],
+                "正常" if info else "降级", timing["parse"],
             )
 
             page_count = len(pages) if pages else 1
@@ -1314,28 +1253,19 @@ class BilibiliMixin:
                         for idx in page_indexes:
                             page_info = pages[idx] if idx < len(pages) else {}
                             page_duration = page_info.get("duration")
-                            if (
-                                isinstance(page_duration, (int, float))
-                                and page_duration > 0
-                            ):
+                            if isinstance(page_duration, (int, float)) and page_duration > 0:
                                 duration_to_check += int(page_duration)
                         if duration_to_check <= 0:
                             duration_to_check = duration_seconds
                     else:
                         if 0 <= page_index < len(pages):
                             page_duration = pages[page_index].get("duration")
-                            if (
-                                isinstance(page_duration, (int, float))
-                                and page_duration > 0
-                            ):
+                            if isinstance(page_duration, (int, float)) and page_duration > 0:
                                 duration_to_check = int(page_duration)
                 if duration_to_check and duration_to_check > max_duration_seconds:
                     logger.info(
                         "⏱️ B站视频时长超限%s: %ds > %ds, 标题=%s",
-                        source_tag,
-                        duration_to_check,
-                        max_duration_seconds,
-                        title[:30],
+                        source_tag, duration_to_check, max_duration_seconds, title[:30],
                     )
                     event.set_result(event.plain_result("视频太长了你自己看去"))
                     return
@@ -1366,13 +1296,8 @@ class BilibiliMixin:
                     try:
                         page_start = time.perf_counter()
                         video_path, actual_quality = await self._download_video(
-                            video_obj,
-                            bvid,
-                            idx,
-                            page_count,
-                            cookies,
-                            request_id,
-                            ref.avid,
+                            video_obj, bvid, idx, page_count, cookies,
+                            request_id, ref.avid, is_logged_in=cookie_status.is_login,
                         )
                         size_bytes = self._assert_video_file_ready(
                             video_path, source_tag, request_id
@@ -1381,21 +1306,15 @@ class BilibiliMixin:
                         page_elapsed = time.perf_counter() - page_start
                         logger.debug(
                             "✅ B站分P下载成功%s [%d/%d]: size=%.2fMB, 画质=%s, 耗时=%.2fs",
-                            source_tag,
-                            idx + 1,
-                            len(page_indexes),
-                            size_bytes / 1024 / 1024,
-                            actual_quality,
-                            page_elapsed,
+                            source_tag, idx + 1, len(page_indexes),
+                            size_bytes / 1024 / 1024, actual_quality, page_elapsed,
                         )
                         page_text = (
                             f"📄 分P {idx + 1}/{page_count}: {page_title}\n"
                             f"⏱️ 时长: {page_duration // 60}:{page_duration % 60:02d}\n"
                             f"🎞️ 实际画质: {actual_quality}"
                         )
-                        nodes.nodes.append(
-                            Node(uin=sender_uin, content=[Plain(page_text)])
-                        )
+                        nodes.nodes.append(Node(uin=sender_uin, content=[Plain(page_text)]))
                         abs_video_path = str(video_path.resolve())
                         merge_video_component = (
                             await self._prepare_component_for_merge_send(
@@ -1409,75 +1328,52 @@ class BilibiliMixin:
                         raise
                     except SizeLimitExceeded:
                         nodes.nodes.append(
-                            Node(
-                                uin=sender_uin,
-                                content=[Plain("我没流量了, 看不了那么大的视频")],
-                            )
+                            Node(uin=sender_uin, content=[Plain("我没流量了, 看不了那么大的视频")])
                         )
                     except Exception as exc:
                         logger.error("❌ 视频下载失败%s: %s", source_tag, str(exc))
                         if self.error_notify_mode == "报错":
-                            error_text = f"❌ 分P {idx + 1} 下载失败: {str(exc)}"
                             nodes.nodes.append(
-                                Node(uin=sender_uin, content=[Plain(error_text)])
+                                Node(uin=sender_uin, content=[Plain(f"❌ 分P {idx + 1} 下载失败: {str(exc)}")])
                             )
                         elif self.error_notify_mode == "脱敏":
                             nodes.nodes.append(
-                                Node(
-                                    uin=sender_uin,
-                                    content=[Plain(f"❌ 分P {idx + 1} 下载失败")],
-                                )
+                                Node(uin=sender_uin, content=[Plain(f"❌ 分P {idx + 1} 下载失败")])
                             )
 
                 timing["download"] = time.perf_counter() - download_start
 
-                # region 发送阶段
                 send_start = time.perf_counter()
                 for path in video_paths:
                     self._assert_video_file_ready(path, source_tag, request_id)
                 await event.send(MessageChain([nodes]))
                 timing["send"] = time.perf_counter() - send_start
-                # endregion
 
                 if BILI_QQ_THUMB_PATH and cover_url and video_paths:
                     for path in video_paths:
                         video_md5 = await self.calculate_md5(path)
-                        thumbnail_save_path = (
-                            get_bilibili_thumb_path() / f"{video_md5}.png"
-                        )
+                        thumbnail_save_path = get_bilibili_thumb_path() / f"{video_md5}.png"
                         qq_thumb_path = Path(BILI_QQ_THUMB_PATH) / f"{video_md5}_0.png"
-                        if await self.download_thumbnail(
-                            cover_url, thumbnail_save_path
-                        ):
+                        if await self.download_thumbnail(cover_url, thumbnail_save_path):
                             await asyncio.to_thread(
                                 shutil.copy, thumbnail_save_path, qq_thumb_path
                             )
                             thumbnail_paths.append(thumbnail_save_path)
 
-                # 输出完整耗时日志
                 total_elapsed = time.perf_counter() - process_start
                 logger.info(
                     "🎬 B站处理完成%s: 标题=%s, 分P=%d | 耗时: 解析=%.2fs, 下载=%.2fs, 发送=%.2fs, 总计=%.2fs",
-                    source_tag,
-                    title[:20],
-                    len(video_paths),
-                    timing.get("parse", 0),
-                    timing.get("download", 0),
-                    timing.get("send", 0),
-                    total_elapsed,
+                    source_tag, title[:20], len(video_paths),
+                    timing.get("parse", 0), timing.get("download", 0),
+                    timing.get("send", 0), total_elapsed,
                 )
                 return
 
             # 单P视频处理
             try:
                 video_path, actual_quality = await self._download_video(
-                    video_obj,
-                    bvid,
-                    page_index,
-                    page_count,
-                    cookies,
-                    request_id,
-                    ref.avid,
+                    video_obj, bvid, page_index, page_count, cookies,
+                    request_id, ref.avid, is_logged_in=cookie_status.is_login,
                 )
                 size_bytes = self._assert_video_file_ready(
                     video_path, source_tag, request_id
@@ -1485,9 +1381,7 @@ class BilibiliMixin:
                 video_paths.append(video_path)
                 logger.debug(
                     "✅ B站视频下载成功%s: size=%.2fMB, 画质=%s, 耗时=%.2fs",
-                    source_tag,
-                    size_bytes / 1024 / 1024,
-                    actual_quality,
+                    source_tag, size_bytes / 1024 / 1024, actual_quality,
                     time.perf_counter() - download_start,
                 )
             except asyncio.CancelledError:
@@ -1497,6 +1391,8 @@ class BilibiliMixin:
                 return
             except Exception as exc:
                 logger.error("❌ 视频下载失败%s: %s", source_tag, str(exc))
+                if "412" in str(exc).lower():
+                    self._invalidate_fingerprint_cache()
                 if self.error_notify_mode == "报错":
                     event.set_result(event.plain_result(f"❌ 视频下载失败: {str(exc)}"))
                 elif self.error_notify_mode == "脱敏":
@@ -1510,32 +1406,19 @@ class BilibiliMixin:
             render_start = time.perf_counter()
             card_path = None
             summary_text = None
-            # 元数据降级时禁用卡片渲染（无封面数据）
             render_card = getattr(self, "bili_render_card", False) and info is not None
             if self.bili_merge_send and render_card:
                 card_path = await self._render_bili_card(
-                    title=title,
-                    author=up_name,
-                    cover_url=cover_url,
-                    bvid=bvid,
-                    views=view_count,
-                    likes=likes,
-                    coins=coins,
-                    request_id=request_id,
+                    title=title, author=up_name, cover_url=cover_url, bvid=bvid,
+                    views=view_count, likes=likes, coins=coins, request_id=request_id,
                 )
                 if card_path:
                     video_paths.append(card_path)
             elif self.bili_merge_send:
                 summary_text = self._build_bili_summary(
-                    title=title,
-                    up_name=up_name,
-                    view_count=view_count,
-                    likes=likes,
-                    coins=coins,
-                    shares=shares,
-                    comments=comments,
-                    duration_seconds=duration_seconds,
-                    quality=actual_quality,
+                    title=title, up_name=up_name, view_count=view_count,
+                    likes=likes, coins=coins, shares=shares, comments=comments,
+                    duration_seconds=duration_seconds, quality=actual_quality,
                     source_url=ref.source_url,
                 )
             timing["render"] = time.perf_counter() - render_start
@@ -1543,7 +1426,6 @@ class BilibiliMixin:
 
             # region 发送阶段
             send_start = time.perf_counter()
-
             try:
                 self._assert_video_file_ready(video_path, source_tag, request_id)
                 abs_video_path = str(video_path.resolve())
@@ -1552,36 +1434,25 @@ class BilibiliMixin:
                 if self.bili_merge_send:
                     nodes = Nodes([])
                     sender_uin = self._get_merge_sender_uin(event)
-
                     if summary_text:
-                        nodes.nodes.append(
-                            Node(uin=sender_uin, content=[Plain(summary_text)])
-                        )
+                        nodes.nodes.append(Node(uin=sender_uin, content=[Plain(summary_text)]))
                     elif card_path and card_path.exists():
                         card_component = Image.fromFileSystem(str(card_path.resolve()))
-                        nodes.nodes.append(
-                            Node(uin=sender_uin, content=[card_component])
-                        )
-
+                        nodes.nodes.append(Node(uin=sender_uin, content=[card_component]))
                     merge_video_component = (
                         await self._prepare_component_for_merge_send(video_component)
                     )
-                    nodes.nodes.append(
-                        Node(uin=sender_uin, content=[merge_video_component])
-                    )
+                    nodes.nodes.append(Node(uin=sender_uin, content=[merge_video_component]))
                     logger.debug(
                         "🚀 B站合并消息准备发送%s: 节点数=%d",
-                        source_tag,
-                        len(nodes.nodes),
+                        source_tag, len(nodes.nodes),
                     )
                     await event.send(MessageChain([nodes]))
                 else:
-                    # 非合并转发：只发视频
                     logger.debug("🚀 B站普通消息准备发送%s", source_tag)
                     await event.send(MessageChain([video_component]))
 
                 timing["send"] = time.perf_counter() - send_start
-                # endregion
 
                 if BILI_QQ_THUMB_PATH and cover_url:
                     video_md5 = await self.calculate_md5(video_path)
@@ -1593,18 +1464,12 @@ class BilibiliMixin:
                         )
                         thumbnail_paths.append(thumbnail_save_path)
 
-                # 输出完整耗时日志
                 total_elapsed = time.perf_counter() - process_start
                 logger.info(
                     "🎬 B站处理完成%s: 标题=%s, 画质=%s | 耗时: 解析=%.2fs, 下载=%.2fs, 渲染=%.2fs, 发送=%.2fs, 总计=%.2fs",
-                    source_tag,
-                    title[:20],
-                    actual_quality,
-                    timing.get("parse", 0),
-                    timing.get("download", 0),
-                    timing.get("render", 0),
-                    timing.get("send", 0),
-                    total_elapsed,
+                    source_tag, title[:20], actual_quality,
+                    timing.get("parse", 0), timing.get("download", 0),
+                    timing.get("render", 0), timing.get("send", 0), total_elapsed,
                 )
             except asyncio.CancelledError:
                 raise
@@ -1624,7 +1489,6 @@ class BilibiliMixin:
     # endregion
 
     # region 事件处理器
-    # 事件过滤器由 main.py 注册，确保绑定插件实例。
     async def handle_bili_video(self, event: AstrMessageEvent):
         if not self.bili_enabled:
             return

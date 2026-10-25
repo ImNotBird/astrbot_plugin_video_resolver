@@ -161,6 +161,9 @@ class LinkResolverPlugin(
             self._get_config_value("bili_settings.merge_send", False)
         )
         # bparse / bilibilix 解析通道开关
+        self.bili_anonymous_mode = bool(
+    		self._get_config_value("bili_settings.anonymous_mode", False)
+		)
         self.use_bparse = bool(
             self._get_config_value("bili_settings.use_bparse", True)
         )
